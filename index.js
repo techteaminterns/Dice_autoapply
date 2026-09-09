@@ -3,7 +3,8 @@ require('dotenv').config();
 const crypto = require('crypto');
 const { Bot } = require('node-telegram-bot-api');
 const sgMail = require('@sendgrid/mail');
-const { createServiceClient } = require('./lib/supabase');
+const { createPool, createServiceClient } = require('./lib/supabase');
+const { createDashboardServer } = require('./lib/dashboard-server');
 const { fillCurrentStep, isVisibleEnabled, loadApplyProfile } = require('./lib/dice-apply-questions');
 const { openBrowser, closeBrowser, useBrowserbase, maxConcurrent } = require('./lib/browser');
 const { createApplyQueue } = require('./lib/apply-queue');
@@ -24,6 +25,7 @@ if (!dicePassword) {
 }
 
 const supabase = createServiceClient();
+const dashboardServer = createDashboardServer({ db: createPool() });
 const applyQueue = createApplyQueue(supabase);
 const workflowStateStore = createWorkflowStateStore(supabase);
 let applyWorkerController = null;
@@ -34,6 +36,7 @@ const SESSION_MS = 9 * 60 * 60 * 1000;
 const LINK_CUTOFF_MS = (8 * 60 + 32) * 60 * 1000;
 const DECISION_TIMEOUT_MS = 15 * 60 * 1000;
 const NEXT_LINK_DELAY_MS = 28 * 60 * 1000;
+const NEWDAY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
 
 if (!botToken) {
   throw new Error('BOT_TOKEN must be set in the environment.');
@@ -62,14 +65,23 @@ function stateFor(chatId) {
       currentPromptUrl: null,
       currentPromptSentAt: null,
       currentPromptExpiresAt: null,
+      newdayRequestedAt: null,
+      runGeneration: 0,
+      newdayInProgress: null,
     });
   }
   return userStates.get(chatId);
 }
 
 // === TELEGRAM HELPERS ===
-function sendMessage(chatId, text, options = {}) {
-  return bot.api.sendMessage({ chat_id: chatId, text, ...options }).catch(console.error);
+async function sendMessage(chatId, text, options = {}) {
+  try {
+    await bot.api.sendMessage({ chat_id: chatId, text, ...options });
+    return true;
+  } catch (error) {
+    console.error(`[User ${chatId}] Telegram message failed:`, error.message);
+    return false;
+  }
 }
 
 function sendMessageWithButtons(chatId, text, buttons) {
@@ -130,6 +142,7 @@ async function hydrateWorkflowState(chatId) {
   state.currentPromptUrl = row.current_prompt_url;
   state.currentPromptSentAt = row.current_prompt_sent_at ? Date.parse(row.current_prompt_sent_at) : null;
   state.currentPromptExpiresAt = row.current_prompt_expires_at ? Date.parse(row.current_prompt_expires_at) : null;
+  state.newdayRequestedAt = row.newday_requested_at ? Date.parse(row.newday_requested_at) : null;
   return state;
 }
 
@@ -143,6 +156,7 @@ async function persistWorkflowState(chatId, state, changes = {}) {
     current_prompt_url: state.currentPromptUrl,
     current_prompt_sent_at: state.currentPromptSentAt ? new Date(state.currentPromptSentAt).toISOString() : null,
     current_prompt_expires_at: state.currentPromptExpiresAt ? new Date(state.currentPromptExpiresAt).toISOString() : null,
+    newday_requested_at: state.newdayRequestedAt ? new Date(state.newdayRequestedAt).toISOString() : null,
     ...changes,
     updated_at: new Date().toISOString(),
   });
@@ -421,21 +435,26 @@ async function refreshLogin(chatId) {
 }
 
 // === JOBS & APPLICATIONS ===
-async function readJobUrls() {
+async function readJobUrls(scrapedAfter = null) {
   const { data, error } = await supabase
     .from('jobs')
-    .select('url, title, company, applywizz_id, company_email');
+    .select('url, title, company, applywizz_id, company_email, scraped_at');
 
   if (error) {
     console.error('Failed to load jobs:', error.message);
     return [];
   }
-  return (data || []).map((job) => ({
+  return (data || []).filter((job) => {
+    if (!scrapedAfter) return true;
+    const scrapedAt = Date.parse(job.scraped_at || '');
+    return Number.isFinite(scrapedAt) && scrapedAt >= scrapedAfter;
+  }).map((job) => ({
     url: job.url,
     title: job.title,
     company: job.company,
     applywizzId: job.applywizz_id,
     companyEmail: job.company_email,
+    scrapedAt: job.scraped_at,
   }));
 }
 
@@ -687,10 +706,11 @@ async function runJobsLoop(chatId) {
   } catch (error) {
     console.error(`[User ${chatId}] Could not restore workflow state:`, error.message);
   }
+  const runGeneration = state.runGeneration;
   state.jobRunnerActive = true;
   console.log(`[User ${chatId}] Job loop started.`);
 
-  while (state.jobRunnerActive) {
+  while (state.jobRunnerActive && state.runGeneration === runGeneration) {
     if (state.nextScanAt > Date.now()) {
       await waitUntil(state.nextScanAt);
       continue;
@@ -727,7 +747,10 @@ async function runJobsLoop(chatId) {
       continue;
     }
 
-    const jobs = await readJobUrls();
+    const scrapedAfter = state.newdayRequestedAt
+      ? state.newdayRequestedAt - NEWDAY_LOOKBACK_MS
+      : null;
+    const jobs = await readJobUrls(scrapedAfter);
     const urls = jobs.map((job) => job.url);
     const hasNewUrl = urls.some((url) => !state.knownJobUrls.has(url));
     state.knownJobUrls = new Set(urls);
@@ -749,7 +772,7 @@ async function runJobsLoop(chatId) {
 
     for (const job of jobs) {
       const { url } = job;
-      if (!state.jobRunnerActive) {
+      if (!state.jobRunnerActive || state.runGeneration !== runGeneration) {
         console.log(`[User ${chatId}] Job runner stopped.`);
         break;
       }
@@ -781,6 +804,11 @@ async function runJobsLoop(chatId) {
         break;
       }
 
+      if (String(job.applywizzId || '') !== String(applyProfile.applywizz_id || '')
+        || String(job.companyEmail || '').trim().toLowerCase() !== String(applyProfile.company_email || '').trim().toLowerCase()) {
+        continue;
+      }
+
       if (!state.sessionStartedAt) {
         state.sessionStartedAt = Date.now();
         state.sessionDeadline = state.sessionStartedAt + SESSION_MS;
@@ -791,11 +819,6 @@ async function runJobsLoop(chatId) {
           deadlineAt: new Date(state.sessionDeadline).toISOString(),
           linkCutoffAt: new Date(state.sessionStartedAt + LINK_CUTOFF_MS).toISOString(),
         });
-      }
-
-      if (String(job.applywizzId || '') !== String(applyProfile.applywizz_id || '')
-        || String(job.companyEmail || '').trim().toLowerCase() !== String(applyProfile.company_email || '').trim().toLowerCase()) {
-        continue;
       }
 
       unhandledUrlFound = true;
@@ -840,6 +863,7 @@ async function runJobsLoop(chatId) {
         Math.max(0, state.sessionDeadline - promptSentAt)
       );
       const response = await waitForDecision(chatId, decisionWaitMs);
+      if (state.runGeneration !== runGeneration) break;
       const clickAt = response.clickedAt || Date.now();
       await audit(chatId, response.decision === null ? 'job_missed' : response.decision ? 'job_yes' : 'job_no', {
         url,
@@ -967,19 +991,26 @@ async function runJobsLoop(chatId) {
       }
     }
 
-    const activeClientJob = clientId && await applyQueue.hasActiveClientJob(clientId);
+    const activeClientJob = clientId
+      ? await applyQueue.hasActiveClientJob(clientId)
+      : false;
+    const allRecentJobsHandled = urls.length > 0 && !unhandledUrlFound && !activeClientJob;
     if (
-      urls.length > 0 &&
-      !unhandledUrlFound &&
-      !activeClientJob &&
+      allRecentJobsHandled &&
       !state.completionNotified &&
-      state.jobRunnerActive
+      state.jobRunnerActive &&
+      state.runGeneration === runGeneration
     ) {
-      state.completionNotified = true;
-      await sendMessage(
+      const details = {
+        jobCount: urls.length,
+        checkedAt: new Date().toISOString(),
+      };
+      await audit(chatId, 'all_jobs_completed', details);
+      const sent = await sendMessage(
         chatId,
         'All jobs from the CSV have been completed. I will wait for new job links.'
       );
+      if (sent) state.completionNotified = true;
     }
 
     if (!offeredAny && state.jobRunnerActive) {
@@ -1061,9 +1092,74 @@ async function runSignInWorkflow(chatId, { greet = false } = {}) {
   }
 }
 
+async function startNewday(chatId) {
+  const state = stateFor(chatId);
+  if (state.newdayInProgress) return state.newdayInProgress;
+
+  state.newdayInProgress = (async () => {
+    await hydrateWorkflowState(chatId);
+    if (Number.isFinite(state.sessionDeadline) && state.sessionDeadline > Date.now()) {
+      await sendMessage(chatId, 'Your 9-hour job session is still active. Try /newday after it ends.');
+      return;
+    }
+
+    const activeSession = await readActiveSession(chatId);
+    if (!activeSession) {
+      await sendMessage(chatId, 'Please sign in first with /start.');
+      return;
+    }
+
+    state.jobRunnerActive = false;
+    state.runGeneration += 1;
+    if (state.decisionTimer) clearTimeout(state.decisionTimer);
+    if (state.decisionResolver) state.decisionResolver(false);
+    state.decisionTimer = null;
+    state.decisionResolver = null;
+    state.currentPromptToken = null;
+    state.currentPromptUrl = null;
+    state.currentPromptSentAt = null;
+    state.currentPromptExpiresAt = null;
+    state.sessionStartedAt = null;
+    state.sessionDeadline = null;
+    state.nextScanAt = 0;
+    state.consecutiveNoCount = 0;
+    state.completionNotified = false;
+    state.knownJobUrls = new Set();
+    state.pendingJobUrl = {};
+    state.newdayRequestedAt = Date.now();
+
+    await persistWorkflowState(chatId, state, {
+      session_started_at: null,
+      session_deadline: null,
+      next_scan_at: null,
+      consecutive_no_count: 0,
+      current_prompt_token: null,
+      current_prompt_url: null,
+      current_prompt_sent_at: null,
+      current_prompt_expires_at: null,
+      last_decision: null,
+      last_decision_at: null,
+    });
+    await audit(chatId, 'newday_started', {
+      requestedAt: new Date(state.newdayRequestedAt).toISOString(),
+      jobsSince: new Date(state.newdayRequestedAt - NEWDAY_LOOKBACK_MS).toISOString(),
+    });
+
+    state.jobRunnerActive = true;
+    runJobsLoop(chatId).catch((error) => {
+      console.error(`[User ${chatId}] New-day job loop failed:`, error.message);
+    });
+    await sendMessage(chatId, 'New day started. I will send the first eligible job scraped within the last 24 hours.');
+  })().finally(() => {
+    state.newdayInProgress = null;
+  });
+
+  return state.newdayInProgress;
+}
+
 async function handleCommand(chatId, text) {
   const state = stateFor(chatId);
-  const normalized = text.toLowerCase().replace(/[\/]+/g, '').trim();
+  const normalized = text.toLowerCase().replace(/^[/#]+/, '').trim();
 
   if (['continue', 'yes', 'y'].includes(normalized) && state.decisionResolver) {
     const resolver = state.decisionResolver;
@@ -1095,6 +1191,11 @@ async function handleCommand(chatId, text) {
 
   if (state.workflowActive) {
     await sendMessage(chatId, 'An operation is already running. Complete it or use /cancel first.');
+    return;
+  }
+
+  if (normalized === 'newday') {
+    await startNewday(chatId);
     return;
   }
 
@@ -1182,6 +1283,11 @@ bot.on('callback_query', async (ctx) => {
 
 // === BOOTSTRAP ===
 (async () => {
+  const dashboardPort = Number(process.env.PORT || 3000);
+  dashboardServer.listen(dashboardPort, '0.0.0.0', () => {
+    console.log(`[Init] Dashboard listening on port ${dashboardPort} at /dashboard`);
+  });
+
   console.log('[Init] Testing bot token...');
   try {
     await bot.api.getMe();
@@ -1230,6 +1336,7 @@ async function shutdown() {
     state.jobRunnerActive = false;
   }
   if (bot.isRunning()) await bot.stopPolling().catch(() => { });
+  await new Promise((resolve) => dashboardServer.close(resolve));
 }
 
 process.once('SIGINT', shutdown);
