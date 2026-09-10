@@ -1,6 +1,5 @@
 require('dotenv').config();
 
-const bcrypt = require('bcryptjs');
 const { createPool } = require('../lib/supabase');
 
 const args = new Map();
@@ -10,23 +9,26 @@ for (let index = 2; index < process.argv.length; index += 1) {
 }
 
 const email = String(args.get('email') || '').trim().toLowerCase();
-const password = String(args.get('password') || '');
+const name = String(args.get('name') || '').trim() || (email ? email.split('@')[0] : '');
+const role = String(args.get('role') || '').trim() || 'operator';
 
-if (!email || !email.includes('@') || password.length < 12) {
-  console.error('Usage: npm run create-operator -- --email=operator@example.com --password="at-least-12-characters"');
+if (!email || !email.includes('@')) {
+  console.error('Usage: npm run create-operator -- --email=operator@example.com [--name="Operator Name"] [--role=admin]');
   process.exit(1);
 }
 
 (async () => {
   const db = createPool();
-  const passwordHash = await bcrypt.hash(password, 12);
   await db.query(
-    `insert into operator_accounts (email, password_hash)
-     values ($1, $2)
-     on conflict (email) do update set password_hash = excluded.password_hash, disabled = false`,
-    [email, passwordHash]
+    `insert into operator_accounts (email, name, role, disabled)
+     values ($1, $2, $3, false)
+     on conflict (email) do update set
+       name = excluded.name,
+       role = excluded.role,
+       disabled = false`,
+    [email, name, role]
   );
-  console.log(`Operator account ready: ${email}`);
+  console.log(`Operator account ready: ${email} (${name} - ${role})`);
   await db.end();
 })().catch(async (error) => {
   console.error(`Could not create operator: ${error.message}`);

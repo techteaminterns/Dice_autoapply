@@ -1,49 +1,251 @@
 <!doctype html>
 <html lang="en">
+
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Workflow dashboard</title>
+  <title>APPLYWIZZ Auto Apply V2</title>
   <link rel="stylesheet" href="/dashboard.css">
 </head>
+
 <body>
-  <main class="shell">
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">Operations</p>
-        <h1>Workflow dashboard</h1>
-        <p class="muted" id="status">Loading...</p>
+  <div class="app-container">
+    <!-- Top Master Header -->
+    <header class="master-header">
+      <div class="header-left">
+        <div class="brand">
+          <span class="brand-logo">AW</span>
+          <div class="brand-title">
+            <strong>APPLYWIZZ</strong>
+            <small>Auto Apply V2</small>
+          </div>
+        </div>
+        <nav class="master-nav">
+          <button class="nav-tab active" id="nav-dashboard-tab" type="button">Dashboard</button>
+          <button class="nav-tab" id="nav-stats-tab" type="button">Stats</button>
+          <button class="nav-action-btn" id="copy-link-btn" type="button">Copy Link</button>
+          <button class="nav-action-btn" id="show-qr-btn" type="button">Show QR</button>
+        </nav>
       </div>
-      <button class="button secondary" id="logout">Log out</button>
+
+      <div class="header-right">
+        <div class="telemetry-pill yellow" id="telemetry-candidates">Candidates: <span id="candidates-count">0</span>
+        </div>
+        <div class="telemetry-pill blue" id="telemetry-jobs">Jobs: <span id="jobs-count">0</span></div>
+        <button class="icon-button" id="refresh-btn" type="button" title="Refresh Dashboard">↻</button>
+        <div class="operator-badge" id="operator-badge"><span class="op-tag">OP</span> <span
+            id="operator-name">Operator</span></div>
+        <button class="button secondary small" id="logout">Log out</button>
+      </div>
     </header>
 
-    <section class="controls" aria-label="Dashboard filters">
-      <label>Date <input type="date" id="date"></label>
-      <label>Timezone
-        <select id="timezone">
-          <option value="browser">Browser local</option>
-          <option value="UTC">UTC</option>
-          <option value="Pacific">Pacific</option>
-          <option value="Mountain">Mountain</option>
-          <option value="Central">Central</option>
-          <option value="Eastern">Eastern</option>
-        </select>
-      </label>
-      <div class="summary" id="summary"></div>
+    <!-- Controls Toolbar (Date & Timezone) -->
+    <section class="controls-bar" aria-label="Dashboard controls">
+      <div class="controls-group">
+        <label>Date <input type="date" id="date"></label>
+        <label>Timezone
+          <select id="timezone">
+            <option value="browser">Browser local</option>
+            <option value="UTC">UTC</option>
+            <option value="Pacific">Pacific</option>
+            <option value="Mountain">Mountain</option>
+            <option value="Central">Central</option>
+            <option value="Eastern">Eastern</option>
+          </select>
+        </label>
+      </div>
+      <div class="status-summary" id="status">Ready</div>
     </section>
 
+    <!-- Authentication Panel (Login) -->
     <section id="login" class="login-panel" hidden>
       <h2>Operator sign in</h2>
-      <form id="login-form">
-        <label>Email <input type="email" id="email" required autocomplete="username"></label>
-        <label>Password <input type="password" id="password" required autocomplete="current-password"></label>
-        <button class="button" type="submit">Sign in</button>
-        <p class="error" id="login-error"></p>
+
+      <!-- Step 1: Request OTP -->
+      <form id="request-otp-form">
+        <label>Email <input type="email" id="email" required autocomplete="username"
+            placeholder="operator@example.com"></label>
+        <button class="button" type="submit" id="send-otp-btn">Send OTP</button>
+        <p class="error" id="email-error"></p>
+      </form>
+
+      <!-- Step 2: Verify OTP -->
+      <form id="verify-otp-form" hidden>
+        <p class="info-message" id="otp-sent-info">OTP sent to your email.</p>
+        <label>Enter 6-Digit OTP <input type="text" id="otp" required autocomplete="one-time-code" maxlength="6"
+            pattern="[0-9]{6}" placeholder="123456"></label>
+        <div class="button-group">
+          <button class="button" type="submit" id="verify-otp-btn">Verify & Sign in</button>
+          <button class="button secondary" type="button" id="resend-otp-btn">Resend OTP</button>
+        </div>
+        <button class="link-button" type="button" id="change-email-btn">← Use a different email</button>
+        <p class="error" id="otp-error"></p>
       </form>
     </section>
 
-    <section id="users" class="users" hidden></section>
-  </main>
+    <!-- View Container: Dashboard Tab (Candidates Directory + Workspace) -->
+    <div id="dashboard-view-container" class="main-workspace" hidden>
+      <!-- Left Directory Sidebar -->
+      <aside class="sidebar-panel" id="directory-panel">
+        <div class="sidebar-header">
+          <h3>Candidates Directory</h3>
+          <span class="count-badge" id="directory-count-badge">0 / 0</span>
+        </div>
+        <div class="search-box">
+          <input type="search" id="candidate-search" placeholder="🔍 Search name or AWL-ID...">
+        </div>
+        <div class="candidate-list" id="candidate-list"></div>
+      </aside>
+
+      <!-- Right Candidate Workspace -->
+      <main class="workspace-panel" id="workspace-panel">
+        <!-- Initial Blank State -->
+        <div class="empty-state" id="empty-workspace">
+          <div class="empty-icon">📂</div>
+          <h3>No Candidate Selected</h3>
+          <p class="muted">Select a candidate from the left directory to view their Dashboard and Jobs telemetry.</p>
+        </div>
+
+        <!-- Candidate Workspace (Visible when a candidate is selected) -->
+        <div class="candidate-workspace" id="candidate-workspace" hidden>
+          <div class="workspace-subnav">
+            <button class="subnav-tab active" id="subnav-dashboard-btn" type="button">Dashboard</button>
+            <button class="subnav-tab" id="subnav-jobs-btn" type="button">Jobs</button>
+          </div>
+
+          <!-- Sub-Tab 1: Candidate Dashboard -->
+          <div class="subtab-content" id="candidate-dashboard-tab-content">
+            <section class="panel-card">
+              <h4>Assigned Applications Queue</h4>
+              <div class="jobs-queue-list" id="candidate-jobs-queue"></div>
+            </section>
+
+            <section class="panel-card" id="job-details-card">
+              <div class="card-header-bar">
+                <span class="badge-pill blue" id="detail-job-company">Company</span>
+                <span class="badge-pill green" id="detail-job-status">Applied</span>
+              </div>
+              <h3 id="detail-job-title">Job Title</h3>
+              <p class="job-url-link"><a id="detail-job-url" href="#" target="_blank" rel="noopener">Open Job URL ↗</a>
+              </p>
+            </section>
+
+            <section class="panel-card">
+              <h4>Telegram Operational Window</h4>
+              <div class="session-metrics-grid" id="session-metrics-grid"></div>
+            </section>
+          </div>
+
+          <!-- Sub-Tab 2: Candidate Jobs (Telegram Prompt Stats) -->
+          <div class="subtab-content" id="candidate-jobs-tab-content" hidden>
+            <div class="stats-cards-grid">
+              <div class="metric-card yellow">
+                <span>Total Prompts</span>
+                <strong id="cand-stat-total-prompts">0</strong>
+                <small>Bot prompts sent to Telegram</small>
+              </div>
+              <div class="metric-card green">
+                <span>Accepted (Yes)</span>
+                <strong id="cand-stat-accepted-prompts">0</strong>
+                <small>Approved by user</small>
+              </div>
+              <div class="metric-card red">
+                <span>Rejected (No)</span>
+                <strong id="cand-stat-rejected-prompts">0</strong>
+                <small>Rejected by user</small>
+              </div>
+              <div class="metric-card blue">
+                <span>Skipped / Expired</span>
+                <strong id="cand-stat-skipped-prompts">0</strong>
+                <small>Timed out or skipped</small>
+              </div>
+            </div>
+
+            <section class="panel-card margin-top">
+              <h4>Prompts Telemetry List</h4>
+              <div class="prompts-list" id="candidate-prompts-list"></div>
+            </section>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- View Container: Stats Tab (Master Combined Metrics & Global Jobs Table) -->
+    <div id="stats-view-container" class="stats-workspace" hidden>
+      <h2>Application Pipeline Stats</h2>
+      <p class="muted">Real-time throughput metrics, resolution tier breakdowns, and submission telemetry across all
+        candidates.</p>
+
+      <div class="stats-cards-grid master">
+        <div class="metric-card yellow">
+          <span>TOTAL CANDIDATES</span>
+          <strong id="stats-total-candidates">0</strong>
+          <small>Ingested & registered</small>
+        </div>
+        <div class="metric-card blue">
+          <span>TOTAL APPLICATIONS</span>
+          <strong id="stats-total-applications">0</strong>
+          <small>Processed jobs</small>
+        </div>
+        <div class="metric-card green">
+          <span>ACCEPTED (YES)</span>
+          <strong id="stats-prompts-accepted">0</strong>
+          <small>User approved</small>
+        </div>
+        <div class="metric-card red">
+          <span>REJECTED (NO)</span>
+          <strong id="stats-prompts-rejected">0</strong>
+          <small>User declined</small>
+        </div>
+        <div class="metric-card gray">
+          <span>SKIPPED / EXPIRED</span>
+          <strong id="stats-prompts-skipped">0</strong>
+          <small>Timed out</small>
+        </div>
+      </div>
+
+      <section class="panel-card margin-top">
+        <div class="card-header-bar">
+          <h3>Master Jobs Directory</h3>
+          <input type="search" id="global-jobs-search" placeholder="🔍 Search candidate, job title, company..."
+            style="max-width: 300px;">
+        </div>
+        <div class="table-responsive">
+          <table class="data-table" id="master-jobs-table">
+            <thead>
+              <tr>
+                <th>Candidate</th>
+                <th>AWL-ID</th>
+                <th>Job Title / Company</th>
+                <th>Status</th>
+                <th>Applied At</th>
+                <th>Job Link</th>
+              </tr>
+            </thead>
+            <tbody id="master-jobs-tbody"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <!-- QR Code Modal Overlay -->
+  <div id="qr-modal" class="modal-overlay" hidden>
+    <div class="modal-backdrop" id="qr-modal-backdrop"></div>
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>Telegram Bot QR Code</h3>
+        <button class="modal-close-btn" id="close-qr-modal-btn" type="button">Close ✖</button>
+      </div>
+      <div class="modal-body">
+        <img src="BotDice.png" alt="Telegram Bot QR Code" class="qr-modal-img">
+        <p class="muted margin-top" style="text-align: center; margin-bottom: 0;">Scan code to open Telegram Bot chat
+        </p>
+      </div>
+    </div>
+  </div>
+
   <script src="/dashboard.js"></script>
 </body>
+
 </html>

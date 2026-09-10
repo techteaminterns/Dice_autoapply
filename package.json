@@ -1,6 +1,7 @@
 {
   "scripts": {
     "create-operator": "node scripts/create-operator.js",
+    "import-operators": "node scripts/import-operators.js",
     "import-clients": "node scripts/import-clients.js",
     "start": "node index.js",
     "test": "node --test test/*.test.js",

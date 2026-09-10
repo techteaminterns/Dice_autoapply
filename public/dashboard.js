@@ -1,41 +1,235 @@
-const state = { timer: null, data: null };
+const state = {
+  timer: null,
+  countdownTimer: null,
+  data: null,
+  activeTab: 'dashboard', // 'dashboard' | 'stats'
+  activeCandidateId: null, // null keeps right side blank
+  candidateSubTab: 'dashboard', // 'dashboard' | 'jobs'
+  selectedJobId: null,
+  searchQuery: '',
+  globalJobSearch: '',
+  operatorEmail: '',
+  operatorName: 'Operator',
+};
+
 const dateInput = document.querySelector('#date');
 const timezoneInput = document.querySelector('#timezone');
 const statusText = document.querySelector('#status');
-const summary = document.querySelector('#summary');
-const users = document.querySelector('#users');
-const loginPanel = document.querySelector('#login');
 
+const navDashboardTab = document.querySelector('#nav-dashboard-tab');
+const navStatsTab = document.querySelector('#nav-stats-tab');
+const refreshBtn = document.querySelector('#refresh-btn');
+const logoutBtn = document.querySelector('#logout');
+
+const loginPanel = document.querySelector('#login');
+const dashboardViewContainer = document.querySelector('#dashboard-view-container');
+const statsViewContainer = document.querySelector('#stats-view-container');
+
+const requestOtpForm = document.querySelector('#request-otp-form');
+const verifyOtpForm = document.querySelector('#verify-otp-form');
+const emailInput = document.querySelector('#email');
+const otpInput = document.querySelector('#otp');
+const emailError = document.querySelector('#email-error');
+const otpError = document.querySelector('#otp-error');
+const otpSentInfo = document.querySelector('#otp-sent-info');
+
+const candidateSearchInput = document.querySelector('#candidate-search');
+const candidateList = document.querySelector('#candidate-list');
+const directoryCountBadge = document.querySelector('#directory-count-badge');
+
+const emptyWorkspace = document.querySelector('#empty-workspace');
+const candidateWorkspace = document.querySelector('#candidate-workspace');
+const subnavDashboardBtn = document.querySelector('#subnav-dashboard-btn');
+const subnavJobsBtn = document.querySelector('#subnav-jobs-btn');
+const candidateDashboardTabContent = document.querySelector('#candidate-dashboard-tab-content');
+const candidateJobsTabContent = document.querySelector('#candidate-jobs-tab-content');
+
+const candidateJobsQueue = document.querySelector('#candidate-jobs-queue');
+const detailJobCompany = document.querySelector('#detail-job-company');
+const detailJobStatus = document.querySelector('#detail-job-status');
+const detailJobTitle = document.querySelector('#detail-job-title');
+const detailJobUrl = document.querySelector('#detail-job-url');
+const sessionMetricsGrid = document.querySelector('#session-metrics-grid');
+
+const globalJobsSearchInput = document.querySelector('#global-jobs-search');
+
+// Default date = today YYYY-MM-DD
 const today = new Date();
 dateInput.value = [today.getFullYear(), String(today.getMonth() + 1).padStart(2, '0'), String(today.getDate()).padStart(2, '0')].join('-');
 
+// Event Listeners
 dateInput.addEventListener('change', loadDashboard);
 timezoneInput.addEventListener('change', loadDashboard);
-document.querySelector('#logout').addEventListener('click', async () => {
+refreshBtn.addEventListener('click', loadDashboard);
+
+const copyLinkBtn = document.querySelector('#copy-link-btn');
+const showQrBtn = document.querySelector('#show-qr-btn');
+const qrModal = document.querySelector('#qr-modal');
+const closeQrModalBtn = document.querySelector('#close-qr-modal-btn');
+const qrModalBackdrop = document.querySelector('#qr-modal-backdrop');
+
+copyLinkBtn.addEventListener('click', async () => {
+  const telegramUrl = (state.data && state.data.telegram_bot_url) || 'https://t.me/dice_apply_bot';
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(telegramUrl);
+    } else {
+      const input = document.createElement('input');
+      input.value = telegramUrl;
+      document.body.appendChild(input);
+      input.select();
+      document.execCommand('copy');
+      document.body.removeChild(input);
+    }
+    const originalText = copyLinkBtn.textContent;
+    copyLinkBtn.textContent = '✓ Copied!';
+    copyLinkBtn.style.background = '#d1fae5';
+    setTimeout(() => {
+      copyLinkBtn.textContent = originalText;
+      copyLinkBtn.style.background = '';
+    }, 2000);
+  } catch (err) {
+    console.error('Failed to copy link:', err);
+  }
+});
+
+showQrBtn.addEventListener('click', () => {
+  qrModal.hidden = false;
+});
+
+const closeQrModal = () => {
+  qrModal.hidden = true;
+};
+
+closeQrModalBtn.addEventListener('click', closeQrModal);
+qrModalBackdrop.addEventListener('click', closeQrModal);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && !qrModal.hidden) {
+    closeQrModal();
+  }
+});
+
+navDashboardTab.addEventListener('click', () => {
+  state.activeTab = 'dashboard';
+  updateMasterTabUI();
+});
+
+navStatsTab.addEventListener('click', () => {
+  state.activeTab = 'stats';
+  updateMasterTabUI();
+});
+
+subnavDashboardBtn.addEventListener('click', () => {
+  state.candidateSubTab = 'dashboard';
+  updateCandidateSubTabUI();
+});
+
+subnavJobsBtn.addEventListener('click', () => {
+  state.candidateSubTab = 'jobs';
+  updateCandidateSubTabUI();
+});
+
+candidateSearchInput.addEventListener('input', (e) => {
+  state.searchQuery = e.target.value.toLowerCase().trim();
+  renderCandidateDirectory();
+});
+
+globalJobsSearchInput.addEventListener('input', (e) => {
+  state.globalJobSearch = e.target.value.toLowerCase().trim();
+  renderGlobalJobsTable();
+});
+
+logoutBtn.addEventListener('click', async () => {
   await fetch('/api/auth/logout', { method: 'POST' });
   showLogin();
 });
-document.querySelector('#login-form').addEventListener('submit', async (event) => {
+
+// Step 1: Request OTP
+requestOtpForm.addEventListener('submit', async (event) => {
   event.preventDefault();
-  const error = document.querySelector('#login-error');
-  error.textContent = '';
-  const response = await fetch('/api/auth/login', {
+  emailError.textContent = '';
+  const email = emailInput.value.trim();
+  if (!email) return;
+
+  const response = await fetch('/api/auth/request-otp', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      email: document.querySelector('#email').value,
-      password: document.querySelector('#password').value,
-    }),
+    body: JSON.stringify({ email }),
   });
+
+  const payload = await response.json();
   if (!response.ok) {
-    error.textContent = (await response.json()).error || 'Sign in failed.';
+    emailError.textContent = payload.error || 'Failed to send OTP.';
     return;
   }
+
+  state.operatorEmail = email;
+  otpSentInfo.textContent = `OTP code sent to ${escapeHtml(email)}. (Valid for 5 minutes)`;
+  otpError.textContent = '';
+  otpInput.value = '';
+  requestOtpForm.hidden = true;
+  verifyOtpForm.hidden = false;
+  otpInput.focus();
+});
+
+// Step 2: Verify OTP
+verifyOtpForm.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  otpError.textContent = '';
+  const otp = otpInput.value.trim();
+  if (!otp) return;
+
+  const response = await fetch('/api/auth/verify-otp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: state.operatorEmail, otp }),
+  });
+
+  const payload = await response.json();
+  if (!response.ok) {
+    otpError.textContent = payload.error || 'Verification failed.';
+    return;
+  }
+
+  if (payload.name) state.operatorName = payload.name;
   await loadDashboard();
+});
+
+// Resend OTP
+document.querySelector('#resend-otp-btn').addEventListener('click', async () => {
+  otpError.textContent = '';
+  if (!state.operatorEmail) return;
+
+  const response = await fetch('/api/auth/resend-otp', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: state.operatorEmail }),
+  });
+
+  const payload = await response.json();
+  if (!response.ok) {
+    otpError.textContent = payload.error || 'Failed to resend OTP.';
+    return;
+  }
+
+  otpInput.value = '';
+  otpSentInfo.textContent = `New OTP code sent to ${escapeHtml(state.operatorEmail)}. Previous code invalidated.`;
+  otpInput.focus();
+});
+
+// Change Email link
+document.querySelector('#change-email-btn').addEventListener('click', () => {
+  requestOtpForm.hidden = false;
+  verifyOtpForm.hidden = true;
+  emailError.textContent = '';
+  emailInput.focus();
 });
 
 async function loadDashboard() {
   const params = new URLSearchParams({ date: dateInput.value, timezone: timezoneInput.value });
+  if (timezoneInput.value === 'browser') {
+    params.set('timezone_name', getBrowserTimezone());
+  }
   const response = await fetch(`/api/dashboard?${params}`);
   if (response.status === 401) return showLogin();
   if (!response.ok) {
@@ -43,45 +237,293 @@ async function loadDashboard() {
     return;
   }
   state.data = await response.json();
-  render(state.data);
+  render();
   startPolling();
 }
 
-function render(data) {
+function render() {
+  if (!state.data) return;
   loginPanel.hidden = true;
-  users.hidden = false;
-  const active = data.users.filter((user) => user.has_activity).length;
-  summary.textContent = `${data.users.length} users · ${active} active · refreshed ${new Date().toLocaleTimeString()}`;
-  statusText.textContent = `${data.date} · ${data.timezone}`;
-  users.innerHTML = data.users.map(renderUser).join('');
-  startTimers();
+  statusText.textContent = `Active: ${state.data.date} (${state.data.timezone})`;
+
+  // Update Top Header Telemetry & Operator Name
+  document.querySelector('#candidates-count').textContent = state.data.total_candidates ?? state.data.users.length;
+  document.querySelector('#jobs-count').textContent = state.data.total_jobs ?? 0;
+  document.querySelector('#operator-name').textContent = state.operatorName || 'Operator';
+
+  updateMasterTabUI();
+  renderCandidateDirectory();
+  renderCandidateWorkspace();
+  renderGlobalStats();
 }
 
-function renderUser(user) {
-  const label = escapeHtml(user.full_name || user.company_email || `Telegram ${user.telegram_chat_id}`);
-  const email = escapeHtml(user.company_email || `Telegram ${user.telegram_chat_id}`);
+function updateMasterTabUI() {
+  if (state.activeTab === 'dashboard') {
+    navDashboardTab.classList.add('active');
+    navStatsTab.classList.remove('active');
+    dashboardViewContainer.hidden = false;
+    statsViewContainer.hidden = true;
+  } else {
+    navDashboardTab.classList.remove('active');
+    navStatsTab.classList.add('active');
+    dashboardViewContainer.hidden = true;
+    statsViewContainer.hidden = false;
+    renderGlobalStats();
+  }
+}
+
+function updateCandidateSubTabUI() {
+  if (state.candidateSubTab === 'dashboard') {
+    subnavDashboardBtn.classList.add('active');
+    subnavJobsBtn.classList.remove('active');
+    candidateDashboardTabContent.hidden = false;
+    candidateJobsTabContent.hidden = true;
+  } else {
+    subnavDashboardBtn.classList.remove('active');
+    subnavJobsBtn.classList.add('active');
+    candidateDashboardTabContent.hidden = true;
+    candidateJobsTabContent.hidden = false;
+    renderCandidateJobsSubTab();
+  }
+}
+
+function renderCandidateDirectory() {
+  if (!state.data || !state.data.users) return;
+  const users = state.data.users;
+
+  const filtered = users.filter((u) => {
+    if (!state.searchQuery) return true;
+    const name = String(u.full_name || '').toLowerCase();
+    const email = String(u.company_email || '').toLowerCase();
+    const awl = String(u.applywizz_id || '').toLowerCase();
+    const chat = String(u.telegram_chat_id || '').toLowerCase();
+    return name.includes(state.searchQuery) || email.includes(state.searchQuery) || awl.includes(state.searchQuery) || chat.includes(state.searchQuery);
+  });
+
+  directoryCountBadge.textContent = `${filtered.length} / ${users.length}`;
+
+  if (!filtered.length) {
+    candidateList.innerHTML = '<p class="muted" style="padding:10px;">No candidates match search.</p>';
+    return;
+  }
+
+  candidateList.innerHTML = filtered.map((user) => {
+    const id = String(user.telegram_chat_id);
+    const isSelected = state.activeCandidateId === id;
+    const name = user.full_name || user.company_email || `User ${user.telegram_chat_id}`;
+    const initials = getInitials(name);
+    const awlId = user.applywizz_id ? `AWL-${user.applywizz_id}` : `AWL-${id}`;
+    const jobsCount = user.applications ? user.applications.length : 0;
+    const statusClass = user.has_activity ? 'active' : 'idle';
+    const statusText = user.has_activity ? `${user.audit_logs.length + user.applications.length} events` : 'No activity';
+
+    return `
+      <div class="candidate-card ${isSelected ? 'active' : ''}" onclick="selectCandidate('${id}')">
+        <div class="card-top">
+          <div class="avatar-awl">
+            <span class="avatar">${initials}</span>
+            <span class="awl-pill">${escapeHtml(awlId)}</span>
+          </div>
+          <span class="status-badge ${statusClass}">${statusText}</span>
+        </div>
+        <div class="cand-name">${escapeHtml(name)}</div>
+        <div class="cand-footer">
+          <span class="cand-email">${escapeHtml(user.company_email || '')}</span>
+          <span class="jobs-count-pill">${jobsCount} ${jobsCount === 1 ? 'Job' : 'Jobs'}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+window.selectCandidate = function(chatId) {
+  state.activeCandidateId = chatId;
+  state.selectedJobId = null; // Auto-select most recent job
+  renderCandidateDirectory();
+  renderCandidateWorkspace();
+};
+
+function renderCandidateWorkspace() {
+  if (!state.activeCandidateId || !state.data) {
+    emptyWorkspace.hidden = false;
+    candidateWorkspace.hidden = true;
+    return;
+  }
+
+  const user = state.data.users.find((u) => String(u.telegram_chat_id) === String(state.activeCandidateId));
+  if (!user) {
+    emptyWorkspace.hidden = false;
+    candidateWorkspace.hidden = true;
+    return;
+  }
+
+  emptyWorkspace.hidden = true;
+  candidateWorkspace.hidden = false;
+  updateCandidateSubTabUI();
+
+  // Render Candidate Dashboard Sub-Tab
+  const applications = user.applications || [];
+  if (applications.length > 0) {
+    if (!state.selectedJobId) {
+      state.selectedJobId = applications[applications.length - 1].id;
+    }
+  }
+
+  // Jobs Queue horizontal list
+  if (!applications.length) {
+    candidateJobsQueue.innerHTML = '<p class="muted">No applications recorded for this candidate on this date.</p>';
+  } else {
+    candidateJobsQueue.innerHTML = applications.map((app) => {
+      const isSel = String(app.id) === String(state.selectedJobId);
+      return `
+        <div class="job-item-card ${isSel ? 'selected' : ''}" onclick="selectJob('${app.id}')">
+          <div class="card-header-bar">
+            <span class="badge-pill blue">${escapeHtml(app.job_name || 'Job')}</span>
+            <span class="badge-pill green">${escapeHtml(app.status || 'Applied')}</span>
+          </div>
+          <strong>${escapeHtml(app.job_name || 'Unnamed job')}</strong>
+          <small class="muted">${formatTime(app.applied_at, state.data.timezone_name)}</small>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // Selected Job Details
+  const selectedJob = applications.find((app) => String(app.id) === String(state.selectedJobId)) || applications[applications.length - 1];
+  if (selectedJob) {
+    detailJobCompany.textContent = selectedJob.job_name ? selectedJob.job_name.split('-')[0] : 'Company';
+    detailJobStatus.textContent = selectedJob.status || 'Applied';
+    detailJobTitle.textContent = selectedJob.job_name || 'Unnamed Job';
+    detailJobUrl.href = selectedJob.url || '#';
+    detailJobUrl.textContent = selectedJob.url ? `${selectedJob.url} ↗` : 'No URL link';
+  } else {
+    detailJobCompany.textContent = 'Company';
+    detailJobStatus.textContent = 'No Jobs';
+    detailJobTitle.textContent = 'No job selected';
+    detailJobUrl.href = '#';
+    detailJobUrl.textContent = '—';
+  }
+
+  // Telegram Session Metrics
   const session = user.session;
-  const logs = user.audit_logs.map((row) => ({ time: row.created_at, type: row.event, details: row.details }));
-  user.prompt_events.forEach((row) => logs.push({ time: row.sent_at, type: `prompt: ${row.decision || 'waiting'}`, details: { url: row.url, expires_at: row.expires_at, clicked_at: row.clicked_at } }));
-  user.applications.forEach((row) => logs.push({ time: row.applied_at, type: `application: ${row.status}`, details: { job_name: row.job_name, url: row.url } }));
-  user.queue.forEach((row) => logs.push({ time: row.created_at, type: `queue: ${row.status}`, details: { url: row.url, available_at: row.available_at, started_at: row.started_at, finished_at: row.finished_at } }));
-  logs.sort((left, right) => new Date(left.time) - new Date(right.time));
-  const logHtml = logs.length ? logs.map((log) => `<div class="log"><time>${formatTime(log.time)}</time><div><strong>${escapeHtml(log.type)}</strong><pre>${escapeHtml(JSON.stringify(log.details || {}, null, 2))}</pre></div></div>`).join('') : '<p class="muted">No activity for this date.</p>';
-  const timer = session ? `<div class="timer"><div class="metric"><strong>${formatTime(session.session_started_at)}</strong><span>9-hour window start</span></div><div class="metric"><strong>${formatTime(session.session_deadline)}</strong><span>window deadline</span></div><div class="metric"><strong data-countdown="${escapeHtml(session.session_deadline || '')}">${remaining(session.session_deadline)}</strong><span>window remaining</span></div><div class="metric"><strong>${formatTime(session.next_scan_at)}</strong><span>next link</span></div></div>` : '<p class="muted">No workflow session recorded for this date.</p>';
-  return `<details class="user"><summary><span class="user-name">${label}</span><span class="user-email">${email}</span><span class="badge ${user.has_activity ? '' : 'idle'}">${user.has_activity ? `${logs.length} events` : 'No activity'}</span></summary><div class="user-body">${timer}<div class="columns"><section class="panel"><h3>Timeline</h3>${logHtml}</section><section class="panel"><h3>Current status</h3>${renderCurrent(user)}</section></div></div></details>`;
+  if (session) {
+    sessionMetricsGrid.innerHTML = `
+      <div class="metric-box">
+        <strong>${formatTime(session.session_started_at, state.data.timezone_name)}</strong>
+        <span>1-hr / Window Start</span>
+      </div>
+      <div class="metric-box">
+        <strong>${formatTime(session.session_deadline, state.data.timezone_name)}</strong>
+        <span>Window Deadline</span>
+      </div>
+      <div class="metric-box">
+        <strong data-countdown="${escapeHtml(session.session_deadline || '')}">${remaining(session.session_deadline)}</strong>
+        <span>Window Remaining</span>
+      </div>
+      <div class="metric-box">
+        <strong>${formatTime(session.next_scan_at, state.data.timezone_name)}</strong>
+        <span>Next Scan Link</span>
+      </div>
+    `;
+    startTimers();
+  } else {
+    sessionMetricsGrid.innerHTML = '<p class="muted">No active Telegram workflow session recorded for this date.</p>';
+  }
 }
 
-function renderCurrent(user) {
-  const latest = user.applications[user.applications.length - 1];
-  if (!latest) return '<p class="muted">No application status recorded.</p>';
-  return `<div class="metric"><strong>${escapeHtml(latest.status)}</strong><span>${escapeHtml(latest.job_name || latest.url || 'Current job')}</span></div>`;
+window.selectJob = function(jobId) {
+  state.selectedJobId = jobId;
+  renderCandidateWorkspace();
+};
+
+function renderCandidateJobsSubTab() {
+  if (!state.activeCandidateId || !state.data) return;
+  const user = state.data.users.find((u) => String(u.telegram_chat_id) === String(state.activeCandidateId));
+  if (!user) return;
+
+  const summary = user.prompts_summary || { total: 0, accepted: 0, rejected: 0, skipped: 0 };
+  document.querySelector('#cand-stat-total-prompts').textContent = summary.total;
+  document.querySelector('#cand-stat-accepted-prompts').textContent = summary.accepted;
+  document.querySelector('#cand-stat-rejected-prompts').textContent = summary.rejected;
+  document.querySelector('#cand-stat-skipped-prompts').textContent = summary.skipped;
+
+  const promptEvents = user.prompt_events || [];
+  const promptsContainer = document.querySelector('#candidate-prompts-list');
+  if (!promptEvents.length) {
+    promptsContainer.innerHTML = '<p class="muted">No Telegram bot prompts sent for this candidate on this date.</p>';
+  } else {
+    promptsContainer.innerHTML = promptEvents.map((p) => {
+      let badgeClass = 'badge-pill blue';
+      if (p.decision === 'approved' || p.decision === 'yes') badgeClass = 'badge-pill green';
+      else if (p.decision === 'rejected' || p.decision === 'no') badgeClass = 'badge-pill red';
+
+      return `
+        <div class="log" style="padding:10px 0; border-bottom:1px solid #e2e8f0;">
+          <time>${formatTime(p.sent_at, state.data.timezone_name)}</time>
+          <div>
+            <span class="${badgeClass}">${escapeHtml(p.decision || 'waiting')}</span>
+            <pre style="margin:4px 0 0; font-size:12px;">URL: ${escapeHtml(p.url || '')}\nExpires: ${formatTime(p.expires_at, state.data.timezone_name)}</pre>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+}
+
+function renderGlobalStats() {
+  if (!state.data || !state.data.global_stats) return;
+  const stats = state.data.global_stats;
+
+  document.querySelector('#stats-total-candidates').textContent = stats.total_candidates ?? 0;
+  document.querySelector('#stats-total-applications').textContent = stats.total_applications ?? 0;
+  document.querySelector('#stats-prompts-accepted').textContent = stats.prompts?.accepted ?? 0;
+  document.querySelector('#stats-prompts-rejected').textContent = stats.prompts?.rejected ?? 0;
+  document.querySelector('#stats-prompts-skipped').textContent = stats.prompts?.skipped ?? 0;
+
+  renderGlobalJobsTable();
+}
+
+function renderGlobalJobsTable() {
+  if (!state.data || !state.data.global_stats) return;
+  const applications = state.data.global_stats.all_applications || [];
+  const tbody = document.querySelector('#master-jobs-tbody');
+
+  const filtered = applications.filter((app) => {
+    if (!state.globalJobSearch) return true;
+    const client = String(app.client_name || app.client_email || '').toLowerCase();
+    const title = String(app.job_name || '').toLowerCase();
+    const status = String(app.status || '').toLowerCase();
+    const awl = String(app.applywizz_id || '').toLowerCase();
+    return client.includes(state.globalJobSearch) || title.includes(state.globalJobSearch) || status.includes(state.globalJobSearch) || awl.includes(state.globalJobSearch);
+  });
+
+  if (!filtered.length) {
+    tbody.innerHTML = '<tr><td colspan="6" class="muted" style="text-align:center;">No matching applications found for this date.</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = filtered.map((app) => `
+    <tr>
+      <td><strong>${escapeHtml(app.client_name || app.client_email || `Chat ${app.telegram_chat_id}`)}</strong></td>
+      <td><span class="awl-pill">${escapeHtml(app.applywizz_id ? `AWL-${app.applywizz_id}` : `AWL-${app.telegram_chat_id}`)}</span></td>
+      <td>${escapeHtml(app.job_name || 'Unnamed job')}</td>
+      <td><span class="badge-pill green">${escapeHtml(app.status || 'Applied')}</span></td>
+      <td>${formatTime(app.applied_at, state.data.timezone_name)}</td>
+      <td><a href="${escapeHtml(app.url || '#')}" target="_blank" rel="noopener">Link ↗</a></td>
+    </tr>
+  `).join('');
 }
 
 function showLogin() {
   if (state.timer) clearInterval(state.timer);
   loginPanel.hidden = false;
-  users.hidden = true;
-  statusText.textContent = 'Sign in to view workflow activity.';
+  dashboardViewContainer.hidden = true;
+  statsViewContainer.hidden = true;
+  requestOtpForm.hidden = false;
+  verifyOtpForm.hidden = true;
+  emailError.textContent = '';
+  otpError.textContent = '';
+  statusText.textContent = 'Sign in with Email and OTP to view workflow activity.';
 }
 
 function startPolling() {
@@ -99,6 +541,7 @@ function startTimers() {
 }
 
 function remaining(deadline) {
+  if (!deadline) return '—';
   const seconds = Math.max(0, Math.floor((new Date(deadline).getTime() - Date.now()) / 1000));
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
@@ -106,9 +549,20 @@ function remaining(deadline) {
   return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(remainder).padStart(2, '0')}s`;
 }
 
-function formatTime(value) {
+function formatTime(value, timezoneName) {
   if (!value) return '—';
-  return new Date(value).toLocaleString();
+  return new Date(value).toLocaleString(undefined, { timeZone: timezoneName });
+}
+
+function getBrowserTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+}
+
+function getInitials(name) {
+  if (!name) return 'CW';
+  const parts = String(name).trim().split(/\s+/);
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 function escapeHtml(value) {

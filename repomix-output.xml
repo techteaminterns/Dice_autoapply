@@ -42,6 +42,10 @@ The content is organized as follows:
 <directory_structure>
 data/
   sample-clients.json
+database/
+  migrations/
+    001_dashboard_operator.sql
+    002_workflow_newday.sql
 lib/
   apply-queue.js
   apply-worker.js
@@ -76,561 +80,6 @@ package.json
 
 <files>
 This section contains the contents of the repository's files.
-
-<file path="lib/dashboard-server.js">
-const http = require('http');
-const crypto = require('crypto');
-const fs = require('fs');
-const path = require('path');
-const bcrypt = require('bcryptjs');
-
-const DASHBOARD_TIMEZONES = {
-  browser: null,
-  UTC: 'UTC',
-  Pacific: 'America/Los_Angeles',
-  Mountain: 'America/Denver',
-  Central: 'America/Chicago',
-  Eastern: 'America/New_York',
-};
-const SESSION_DAYS = 7;
-const dashboardRoot = path.join(__dirname, '..', 'public');
-
-function createDashboardServer({ db }) {
-  return http.createServer(async (request, response) => {
-    try {
-      await routeRequest(request, response, db);
-    } catch (error) {
-      console.error('[dashboard] request failed:', error.message);
-      sendJson(response, 500, { error: 'Dashboard request failed.' });
-    }
-  });
-}
-
-async function routeRequest(request, response, db) {
-  const requestUrl = new URL(request.url, 'http://localhost');
-  const pathname = requestUrl.pathname;
-
-  if (request.method === 'GET' && pathname === '/dashboard') {
-    return sendFile(response, 'dashboard.html', 'text/html; charset=utf-8');
-  }
-  if (request.method === 'GET' && pathname === '/dashboard.js') {
-    return sendFile(response, 'dashboard.js', 'application/javascript; charset=utf-8');
-  }
-  if (request.method === 'GET' && pathname === '/dashboard.css') {
-    return sendFile(response, 'dashboard.css', 'text/css; charset=utf-8');
-  }
-  if (request.method === 'POST' && pathname === '/api/auth/login') {
-    return login(request, response, db);
-  }
-  if (request.method === 'POST' && pathname === '/api/auth/logout') {
-    return logout(request, response, db);
-  }
-  if (request.method === 'GET' && pathname === '/api/auth/session') {
-    return authenticate(request, response, db, () => sendJson(response, 200, { authenticated: true }));
-  }
-  if (request.method === 'GET' && pathname === '/api/dashboard') {
-    return authenticate(request, response, db, () => readDashboard(requestUrl, response, db));
-  }
-
-  sendJson(response, 404, { error: 'Not found.' });
-}
-
-async function login(request, response, db) {
-  const body = await readJson(request);
-  const email = String(body.email || '').trim().toLowerCase();
-  const password = String(body.password || '');
-  if (!email || !password) return sendJson(response, 400, { error: 'Email and password are required.' });
-
-  const result = await db.query(
-    `select id, email, password_hash
-       from operator_accounts
-      where lower(email) = $1 and disabled = false
-      limit 1`,
-    [email]
-  );
-  const account = result.rows[0];
-  if (!account || !await bcrypt.compare(password, account.password_hash)) {
-    return sendJson(response, 401, { error: 'Invalid credentials.' });
-  }
-
-  const rawToken = crypto.randomBytes(32).toString('hex');
-  const tokenHash = hashToken(rawToken);
-  await db.query(
-    `insert into operator_sessions (token_hash, operator_id, expires_at)
-     values ($1, $2, now() + ($3 * interval '1 day'))`,
-    [tokenHash, account.id, SESSION_DAYS]
-  );
-  setCookie(response, 'dashboard_session', rawToken, SESSION_DAYS * 24 * 60 * 60);
-  sendJson(response, 200, { authenticated: true, email: account.email });
-}
-
-async function logout(request, response, db) {
-  const token = readCookie(request, 'dashboard_session');
-  if (token) {
-    await db.query(
-      `update operator_sessions set revoked_at = now()
-        where token_hash = $1 and revoked_at is null`,
-      [hashToken(token)]
-    );
-  }
-  setCookie(response, 'dashboard_session', '', 0);
-  sendJson(response, 200, { authenticated: false });
-}
-
-async function authenticate(request, response, db, handler) {
-  const token = readCookie(request, 'dashboard_session');
-  if (!token) return sendJson(response, 401, { error: 'Authentication required.' });
-  const result = await db.query(
-    `select operator_id
-       from operator_sessions
-      where token_hash = $1
-        and revoked_at is null
-        and expires_at > now()
-      limit 1`,
-    [hashToken(token)]
-  );
-  if (!result.rows[0]) return sendJson(response, 401, { error: 'Authentication required.' });
-  return handler(result.rows[0].operator_id);
-}
-
-async function readDashboard(requestUrl, response, db) {
-  const date = requestUrl.searchParams.get('date');
-  const timezone = requestUrl.searchParams.get('timezone') || 'browser';
-  const timezoneName = DASHBOARD_TIMEZONES[timezone];
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return sendJson(response, 400, { error: 'date must be YYYY-MM-DD.' });
-  if (!(timezone in DASHBOARD_TIMEZONES)) return sendJson(response, 400, { error: 'Unsupported timezone.' });
-
-  const zone = timezoneName || 'UTC';
-  const bounds = await db.query(
-    `select ($1::date::timestamp at time zone $2) as start_at,
-            (($1::date + interval '1 day')::timestamp at time zone $2) as end_at`,
-    [date, zone]
-  );
-  const { start_at: startAt, end_at: endAt } = bounds.rows[0];
-
-  const [users, sessions, audits, prompts, applications, queue] = await Promise.all([
-    db.query(`
-      select distinct on (ds.telegram_chat_id)
-        ds.telegram_chat_id, ds.client_id, c.full_name, c.company_email, c.applywizz_id
-      from dice_sessions ds
-      left join clients c on c.id = ds.client_id
-      order by ds.telegram_chat_id, ds.updated_at desc nulls last`),
-    db.query(`
-      select telegram_chat_id, session_started_at, session_deadline, next_scan_at,
-             last_decision, last_decision_at, current_prompt_url,
-             current_prompt_sent_at, current_prompt_expires_at
-      from workflow_sessions
-      where session_started_at < $2 and coalesce(session_deadline, session_started_at) >= $1`, [startAt, endAt]),
-    db.query(`
-      select id, telegram_chat_id, event, details, created_at
-      from workflow_audit_logs
-      where created_at >= $1 and created_at < $2
-      order by created_at asc, id asc`, [startAt, endAt]),
-    db.query(`
-      select id, telegram_chat_id, prompt_token, url, sent_at, expires_at,
-             decision, clicked_at
-      from workflow_prompt_events
-      where sent_at >= $1 and sent_at < $2
-      order by sent_at asc, id asc`, [startAt, endAt]),
-    db.query(`
-      select id, client_id, telegram_chat_id, job_id, url, job_name, status, applied_at
-      from applications
-      where applied_at >= $1 and applied_at < $2
-      order by applied_at asc, id asc`, [startAt, endAt]),
-    db.query(`
-      select id, client_id, telegram_chat_id, job_id, url, status, available_at,
-             created_at, started_at, finished_at, attempts, max_attempts, last_error
-      from apply_queue
-      where created_at >= $1 and created_at < $2
-      order by created_at asc, id asc`, [startAt, endAt]),
-  ]);
-
-  const userMap = new Map(users.rows.map((user) => [String(user.telegram_chat_id), {
-    ...user,
-    has_activity: false,
-    session: sessions.rows.find((row) => String(row.telegram_chat_id) === String(user.telegram_chat_id)) || null,
-    audit_logs: [],
-    prompt_events: [],
-    applications: [],
-    queue: [],
-  }]));
-  const ensureUser = (chatId) => {
-    const key = String(chatId);
-    if (!userMap.has(key)) userMap.set(key, {
-      telegram_chat_id: chatId,
-      full_name: null,
-      company_email: null,
-      applywizz_id: null,
-      has_activity: false,
-      session: null,
-      audit_logs: [],
-      prompt_events: [],
-      applications: [],
-      queue: [],
-    });
-    return userMap.get(key);
-  };
-
-  audits.rows.forEach((row) => { const user = ensureUser(row.telegram_chat_id); user.audit_logs.push(row); user.has_activity = true; });
-  prompts.rows.forEach((row) => { const user = ensureUser(row.telegram_chat_id); user.prompt_events.push(row); user.has_activity = true; });
-  applications.rows.forEach((row) => { const user = ensureUser(row.telegram_chat_id); user.applications.push(row); user.has_activity = true; });
-  queue.rows.forEach((row) => { const user = ensureUser(row.telegram_chat_id); user.queue.push(row); user.has_activity = true; });
-
-  sendJson(response, 200, {
-    date,
-    timezone,
-    start_at: startAt,
-    end_at: endAt,
-    users: [...userMap.values()].sort((left, right) => String(left.full_name || left.company_email || left.telegram_chat_id).localeCompare(String(right.full_name || right.company_email || right.telegram_chat_id))),
-  });
-}
-
-function readJson(request) {
-  return new Promise((resolve, reject) => {
-    let body = '';
-    request.on('data', (chunk) => {
-      body += chunk;
-      if (body.length > 1024 * 1024) reject(new Error('Request body is too large.'));
-    });
-    request.on('end', () => {
-      try { resolve(body ? JSON.parse(body) : {}); } catch (error) { reject(new Error('Invalid JSON body.')); }
-    });
-    request.on('error', reject);
-  });
-}
-
-function sendFile(response, fileName, contentType) {
-  const filePath = path.join(dashboardRoot, fileName);
-  if (!fs.existsSync(filePath)) return sendJson(response, 404, { error: 'Dashboard asset not found.' });
-  response.writeHead(200, { 'content-type': contentType, 'cache-control': 'no-store' });
-  response.end(fs.readFileSync(filePath));
-}
-
-function sendJson(response, status, payload) {
-  response.writeHead(status, {
-    'content-type': 'application/json; charset=utf-8',
-    'cache-control': 'no-store',
-  });
-  response.end(JSON.stringify(payload));
-}
-
-function hashToken(token) {
-  return crypto.createHash('sha256').update(token).digest('hex');
-}
-
-function readCookie(request, name) {
-  const cookies = String(request.headers.cookie || '').split(';');
-  const item = cookies.find((cookie) => cookie.trim().startsWith(`${name}=`));
-  return item ? decodeURIComponent(item.trim().slice(name.length + 1)) : null;
-}
-
-function setCookie(response, name, value, maxAge) {
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
-  response.setHeader('set-cookie', `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure}`);
-}
-
-module.exports = {
-  createDashboardServer,
-  DASHBOARD_TIMEZONES,
-};
-</file>
-
-<file path="public/dashboard.css">
-:root {
-  color-scheme: light;
-  --ink: #17221e;
-  --muted: #68756f;
-  --paper: #f4f1e8;
-  --panel: #fffdf7;
-  --line: #d8d4c7;
-  --accent: #c95638;
-  --accent-dark: #8d3425;
-  --green: #2f7358;
-  font-family: Georgia, 'Times New Roman', serif;
-}
-
-* { box-sizing: border-box; }
-body { margin: 0; color: var(--ink); background: radial-gradient(circle at 15% 0%, #fff9e8 0, var(--paper) 40%, #e6eee6 100%); min-height: 100vh; }
-.shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0 72px; }
-.topbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; border-bottom: 1px solid var(--line); padding-bottom: 24px; }
-.eyebrow { color: var(--accent); font: 700 12px/1.2 Arial, sans-serif; letter-spacing: 2px; text-transform: uppercase; margin: 0 0 10px; }
-h1, h2, h3, p { margin-top: 0; }
-h1 { font-size: clamp(34px, 6vw, 68px); line-height: .96; margin-bottom: 12px; font-weight: 500; }
-h2 { font-size: 25px; font-weight: 500; }
-.muted { color: var(--muted); font: 14px/1.5 Arial, sans-serif; }
-.controls { display: flex; align-items: end; flex-wrap: wrap; gap: 16px; padding: 22px 0; }
-label { display: grid; gap: 7px; color: var(--muted); font: 12px/1.2 Arial, sans-serif; text-transform: uppercase; letter-spacing: .8px; }
-input, select { border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--ink); padding: 11px 12px; font: 16px Georgia, serif; text-transform: none; letter-spacing: 0; }
-.summary { margin-left: auto; color: var(--green); font: 700 14px Arial, sans-serif; }
-.button { border: 0; border-radius: 4px; background: var(--accent); color: white; cursor: pointer; padding: 11px 16px; font: 700 13px Arial, sans-serif; }
-.button:hover { background: var(--accent-dark); }
-.button.secondary { background: transparent; border: 1px solid var(--line); color: var(--ink); }
-.users { display: grid; gap: 10px; }
-.user { background: rgba(255, 253, 247, .84); border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
-.user summary { cursor: pointer; list-style: none; display: grid; grid-template-columns: minmax(180px, 1.3fr) minmax(120px, 1fr) auto; gap: 18px; align-items: center; padding: 18px 20px; }
-.user summary::-webkit-details-marker { display: none; }
-.user summary:hover { background: #fff9e9; }
-.user-name { font-size: 20px; }
-.user-email, .user-meta { color: var(--muted); font: 13px/1.4 Arial, sans-serif; }
-.badge { color: var(--green); font: 700 12px Arial, sans-serif; text-align: right; }
-.badge.idle { color: var(--muted); }
-.user-body { border-top: 1px solid var(--line); padding: 20px; display: grid; gap: 24px; }
-.timer { display: flex; flex-wrap: wrap; gap: 12px; }
-.metric { min-width: 150px; padding: 12px; border-left: 3px solid var(--accent); background: #f8f5eb; }
-.metric strong { display: block; font-size: 18px; font-weight: 500; }
-.metric span { color: var(--muted); font: 11px Arial, sans-serif; text-transform: uppercase; }
-.columns { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
-.panel h3 { font-size: 16px; border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 0; }
-.log { display: grid; grid-template-columns: 155px 1fr; gap: 12px; border-bottom: 1px solid #e7e2d5; padding: 10px 0; font: 13px/1.45 Arial, sans-serif; }
-.log time { color: var(--muted); }
-.log strong { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
-.log pre { white-space: pre-wrap; margin: 4px 0 0; color: var(--muted); font: 12px/1.4 ui-monospace, monospace; }
-.login-panel { max-width: 420px; background: var(--panel); border: 1px solid var(--line); padding: 24px; }
-.login-panel form { display: grid; gap: 16px; }
-.error { color: var(--accent-dark); font: 13px Arial, sans-serif; min-height: 18px; }
-@media (max-width: 700px) {
-  .shell { width: min(100% - 20px, 1180px); padding-top: 24px; }
-  .topbar { align-items: flex-start; }
-  .user summary { grid-template-columns: 1fr auto; }
-  .user-email { grid-column: 1 / -1; grid-row: 2; }
-  .badge { grid-column: 2; grid-row: 1; }
-  .columns { grid-template-columns: 1fr; }
-  .log { grid-template-columns: 1fr; gap: 4px; }
-  .summary { margin-left: 0; width: 100%; }
-}
-</file>
-
-<file path="public/dashboard.html">
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Workflow dashboard</title>
-  <link rel="stylesheet" href="/dashboard.css">
-</head>
-<body>
-  <main class="shell">
-    <header class="topbar">
-      <div>
-        <p class="eyebrow">Operations</p>
-        <h1>Workflow dashboard</h1>
-        <p class="muted" id="status">Loading...</p>
-      </div>
-      <button class="button secondary" id="logout">Log out</button>
-    </header>
-
-    <section class="controls" aria-label="Dashboard filters">
-      <label>Date <input type="date" id="date"></label>
-      <label>Timezone
-        <select id="timezone">
-          <option value="browser">Browser local</option>
-          <option value="UTC">UTC</option>
-          <option value="Pacific">Pacific</option>
-          <option value="Mountain">Mountain</option>
-          <option value="Central">Central</option>
-          <option value="Eastern">Eastern</option>
-        </select>
-      </label>
-      <div class="summary" id="summary"></div>
-    </section>
-
-    <section id="login" class="login-panel" hidden>
-      <h2>Operator sign in</h2>
-      <form id="login-form">
-        <label>Email <input type="email" id="email" required autocomplete="username"></label>
-        <label>Password <input type="password" id="password" required autocomplete="current-password"></label>
-        <button class="button" type="submit">Sign in</button>
-        <p class="error" id="login-error"></p>
-      </form>
-    </section>
-
-    <section id="users" class="users" hidden></section>
-  </main>
-  <script src="/dashboard.js"></script>
-</body>
-</html>
-</file>
-
-<file path="public/dashboard.js">
-const state = { timer: null, data: null };
-const dateInput = document.querySelector('#date');
-const timezoneInput = document.querySelector('#timezone');
-const statusText = document.querySelector('#status');
-const summary = document.querySelector('#summary');
-const users = document.querySelector('#users');
-const loginPanel = document.querySelector('#login');
-
-const today = new Date();
-dateInput.value = [today.getFullYear(), String(today.getMonth() + 1).padStart(2, '0'), String(today.getDate()).padStart(2, '0')].join('-');
-
-dateInput.addEventListener('change', loadDashboard);
-timezoneInput.addEventListener('change', loadDashboard);
-document.querySelector('#logout').addEventListener('click', async () => {
-  await fetch('/api/auth/logout', { method: 'POST' });
-  showLogin();
-});
-document.querySelector('#login-form').addEventListener('submit', async (event) => {
-  event.preventDefault();
-  const error = document.querySelector('#login-error');
-  error.textContent = '';
-  const response = await fetch('/api/auth/login', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({
-      email: document.querySelector('#email').value,
-      password: document.querySelector('#password').value,
-    }),
-  });
-  if (!response.ok) {
-    error.textContent = (await response.json()).error || 'Sign in failed.';
-    return;
-  }
-  await loadDashboard();
-});
-
-async function loadDashboard() {
-  const params = new URLSearchParams({ date: dateInput.value, timezone: timezoneInput.value });
-  const response = await fetch(`/api/dashboard?${params}`);
-  if (response.status === 401) return showLogin();
-  if (!response.ok) {
-    statusText.textContent = 'Dashboard data could not be loaded.';
-    return;
-  }
-  state.data = await response.json();
-  render(state.data);
-  startPolling();
-}
-
-function render(data) {
-  loginPanel.hidden = true;
-  users.hidden = false;
-  const active = data.users.filter((user) => user.has_activity).length;
-  summary.textContent = `${data.users.length} users · ${active} active · refreshed ${new Date().toLocaleTimeString()}`;
-  statusText.textContent = `${data.date} · ${data.timezone}`;
-  users.innerHTML = data.users.map(renderUser).join('');
-  startTimers();
-}
-
-function renderUser(user) {
-  const label = escapeHtml(user.full_name || user.company_email || `Telegram ${user.telegram_chat_id}`);
-  const email = escapeHtml(user.company_email || `Telegram ${user.telegram_chat_id}`);
-  const session = user.session;
-  const logs = user.audit_logs.map((row) => ({ time: row.created_at, type: row.event, details: row.details }));
-  user.prompt_events.forEach((row) => logs.push({ time: row.sent_at, type: `prompt: ${row.decision || 'waiting'}`, details: { url: row.url, expires_at: row.expires_at, clicked_at: row.clicked_at } }));
-  user.applications.forEach((row) => logs.push({ time: row.applied_at, type: `application: ${row.status}`, details: { job_name: row.job_name, url: row.url } }));
-  user.queue.forEach((row) => logs.push({ time: row.created_at, type: `queue: ${row.status}`, details: { url: row.url, available_at: row.available_at, started_at: row.started_at, finished_at: row.finished_at } }));
-  logs.sort((left, right) => new Date(left.time) - new Date(right.time));
-  const logHtml = logs.length ? logs.map((log) => `<div class="log"><time>${formatTime(log.time)}</time><div><strong>${escapeHtml(log.type)}</strong><pre>${escapeHtml(JSON.stringify(log.details || {}, null, 2))}</pre></div></div>`).join('') : '<p class="muted">No activity for this date.</p>';
-  const timer = session ? `<div class="timer"><div class="metric"><strong>${formatTime(session.session_started_at)}</strong><span>9-hour window start</span></div><div class="metric"><strong>${formatTime(session.session_deadline)}</strong><span>window deadline</span></div><div class="metric"><strong data-countdown="${escapeHtml(session.session_deadline || '')}">${remaining(session.session_deadline)}</strong><span>window remaining</span></div><div class="metric"><strong>${formatTime(session.next_scan_at)}</strong><span>next link</span></div></div>` : '<p class="muted">No workflow session recorded for this date.</p>';
-  return `<details class="user"><summary><span class="user-name">${label}</span><span class="user-email">${email}</span><span class="badge ${user.has_activity ? '' : 'idle'}">${user.has_activity ? `${logs.length} events` : 'No activity'}</span></summary><div class="user-body">${timer}<div class="columns"><section class="panel"><h3>Timeline</h3>${logHtml}</section><section class="panel"><h3>Current status</h3>${renderCurrent(user)}</section></div></div></details>`;
-}
-
-function renderCurrent(user) {
-  const latest = user.applications[user.applications.length - 1];
-  if (!latest) return '<p class="muted">No application status recorded.</p>';
-  return `<div class="metric"><strong>${escapeHtml(latest.status)}</strong><span>${escapeHtml(latest.job_name || latest.url || 'Current job')}</span></div>`;
-}
-
-function showLogin() {
-  if (state.timer) clearInterval(state.timer);
-  loginPanel.hidden = false;
-  users.hidden = true;
-  statusText.textContent = 'Sign in to view workflow activity.';
-}
-
-function startPolling() {
-  if (state.timer) return;
-  state.timer = setInterval(loadDashboard, 30 * 60 * 1000);
-}
-
-function startTimers() {
-  if (state.countdownTimer) clearInterval(state.countdownTimer);
-  state.countdownTimer = setInterval(() => {
-    document.querySelectorAll('[data-countdown]').forEach((element) => {
-      element.textContent = remaining(element.dataset.countdown);
-    });
-  }, 1000);
-}
-
-function remaining(deadline) {
-  const seconds = Math.max(0, Math.floor((new Date(deadline).getTime() - Date.now()) / 1000));
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const remainder = seconds % 60;
-  return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(remainder).padStart(2, '0')}s`;
-}
-
-function formatTime(value) {
-  if (!value) return '—';
-  return new Date(value).toLocaleString();
-}
-
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
-}
-
-loadDashboard();
-</file>
-
-<file path="scripts/create-operator.js">
-require('dotenv').config();
-
-const bcrypt = require('bcryptjs');
-const { createPool } = require('../lib/supabase');
-
-const args = new Map();
-for (let index = 2; index < process.argv.length; index += 1) {
-  const [key, value] = process.argv[index].split('=', 2);
-  if (key && value) args.set(key.replace(/^--/, ''), value);
-}
-
-const email = String(args.get('email') || '').trim().toLowerCase();
-const password = String(args.get('password') || '');
-
-if (!email || !email.includes('@') || password.length < 12) {
-  console.error('Usage: npm run create-operator -- --email=operator@example.com --password="at-least-12-characters"');
-  process.exit(1);
-}
-
-(async () => {
-  const db = createPool();
-  const passwordHash = await bcrypt.hash(password, 12);
-  await db.query(
-    `insert into operator_accounts (email, password_hash)
-     values ($1, $2)
-     on conflict (email) do update set password_hash = excluded.password_hash, disabled = false`,
-    [email, passwordHash]
-  );
-  console.log(`Operator account ready: ${email}`);
-  await db.end();
-})().catch(async (error) => {
-  console.error(`Could not create operator: ${error.message}`);
-  process.exitCode = 1;
-});
-</file>
-
-<file path=".env.example">
-DATABASE_URL=postgresql://user:password@azure-host:5432/database?sslmode=require
-DATABASE_SSL_REJECT_UNAUTHORIZED=false
-DATABASE_POOL_MAX=10
-PORT=3000
-
-BOT_TOKEN=
-CHAT_ID=
-DICE_PASSWORD=
-SENDGRID_API_KEY=
-SENDER_EMAIL=noreply@applywizz.com
-BROWSERBASE_API_KEY=
-BROWSERBASE_PROJECT_ID=
-BROWSERBASE_MAX_CONCURRENT=1
-USE_BROWSERBASE=false
-</file>
-
-<file path=".gitignore">
-.env
-node_modules/
-</file>
 
 <file path="data/sample-clients.json">
 [
@@ -1698,6 +1147,39 @@ node_modules/
 ]
 </file>
 
+<file path="database/migrations/001_dashboard_operator.sql">
+create table if not exists public.operator_accounts (
+  id uuid primary key default gen_random_uuid(),
+  email text not null unique,
+  password_hash text not null,
+  disabled boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.operator_sessions (
+  token_hash text primary key,
+  operator_id uuid not null references public.operator_accounts(id) on delete cascade,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  revoked_at timestamptz
+);
+
+create index if not exists operator_sessions_active_idx
+  on public.operator_sessions (token_hash, expires_at)
+  where revoked_at is null;
+
+create index if not exists workflow_audit_logs_dashboard_idx
+  on public.workflow_audit_logs (created_at, telegram_chat_id);
+
+create index if not exists workflow_prompt_events_dashboard_idx
+  on public.workflow_prompt_events (sent_at, telegram_chat_id);
+</file>
+
+<file path="database/migrations/002_workflow_newday.sql">
+alter table if exists public.workflow_sessions
+  add column if not exists newday_requested_at timestamptz;
+</file>
+
 <file path="lib/apply-queue.js">
 /**
  * Durable apply queue backed by Supabase (table: apply_queue).
@@ -2143,6 +1625,280 @@ module.exports = {
   closeBrowser,
   useBrowserbase,
   maxConcurrent,
+};
+</file>
+
+<file path="lib/dashboard-server.js">
+const http = require('http');
+const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const bcrypt = require('bcryptjs');
+
+const DASHBOARD_TIMEZONES = {
+  browser: null,
+  UTC: 'UTC',
+  Pacific: 'America/Los_Angeles',
+  Mountain: 'America/Denver',
+  Central: 'America/Chicago',
+  Eastern: 'America/New_York',
+};
+const SESSION_DAYS = 7;
+const dashboardRoot = path.join(__dirname, '..', 'public');
+
+function createDashboardServer({ db }) {
+  return http.createServer(async (request, response) => {
+    try {
+      await routeRequest(request, response, db);
+    } catch (error) {
+      console.error('[dashboard] request failed:', error.message);
+      sendJson(response, 500, { error: 'Dashboard request failed.' });
+    }
+  });
+}
+
+async function routeRequest(request, response, db) {
+  const requestUrl = new URL(request.url, 'http://localhost');
+  const pathname = requestUrl.pathname;
+
+  if (request.method === 'GET' && pathname === '/dashboard') {
+    return sendFile(response, 'dashboard.html', 'text/html; charset=utf-8');
+  }
+  if (request.method === 'GET' && pathname === '/dashboard.js') {
+    return sendFile(response, 'dashboard.js', 'application/javascript; charset=utf-8');
+  }
+  if (request.method === 'GET' && pathname === '/dashboard.css') {
+    return sendFile(response, 'dashboard.css', 'text/css; charset=utf-8');
+  }
+  if (request.method === 'POST' && pathname === '/api/auth/login') {
+    return login(request, response, db);
+  }
+  if (request.method === 'POST' && pathname === '/api/auth/logout') {
+    return logout(request, response, db);
+  }
+  if (request.method === 'GET' && pathname === '/api/auth/session') {
+    return authenticate(request, response, db, () => sendJson(response, 200, { authenticated: true }));
+  }
+  if (request.method === 'GET' && pathname === '/api/dashboard') {
+    return authenticate(request, response, db, () => readDashboard(requestUrl, response, db));
+  }
+
+  sendJson(response, 404, { error: 'Not found.' });
+}
+
+async function login(request, response, db) {
+  const body = await readJson(request);
+  const email = String(body.email || '').trim().toLowerCase();
+  const password = String(body.password || '');
+  if (!email || !password) return sendJson(response, 400, { error: 'Email and password are required.' });
+
+  const result = await db.query(
+    `select id, email, password_hash
+       from operator_accounts
+      where lower(email) = $1 and disabled = false
+      limit 1`,
+    [email]
+  );
+  const account = result.rows[0];
+  if (!account || !await bcrypt.compare(password, account.password_hash)) {
+    return sendJson(response, 401, { error: 'Invalid credentials.' });
+  }
+
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const tokenHash = hashToken(rawToken);
+  await db.query(
+    `insert into operator_sessions (token_hash, operator_id, expires_at)
+     values ($1, $2, now() + ($3 * interval '1 day'))`,
+    [tokenHash, account.id, SESSION_DAYS]
+  );
+  setCookie(response, 'dashboard_session', rawToken, SESSION_DAYS * 24 * 60 * 60);
+  sendJson(response, 200, { authenticated: true, email: account.email });
+}
+
+async function logout(request, response, db) {
+  const token = readCookie(request, 'dashboard_session');
+  if (token) {
+    await db.query(
+      `update operator_sessions set revoked_at = now()
+        where token_hash = $1 and revoked_at is null`,
+      [hashToken(token)]
+    );
+  }
+  setCookie(response, 'dashboard_session', '', 0);
+  sendJson(response, 200, { authenticated: false });
+}
+
+async function authenticate(request, response, db, handler) {
+  const token = readCookie(request, 'dashboard_session');
+  if (!token) return sendJson(response, 401, { error: 'Authentication required.' });
+  const result = await db.query(
+    `select operator_id
+       from operator_sessions
+      where token_hash = $1
+        and revoked_at is null
+        and expires_at > now()
+      limit 1`,
+    [hashToken(token)]
+  );
+  if (!result.rows[0]) return sendJson(response, 401, { error: 'Authentication required.' });
+  return handler(result.rows[0].operator_id);
+}
+
+async function readDashboard(requestUrl, response, db) {
+  const date = requestUrl.searchParams.get('date');
+  const timezone = requestUrl.searchParams.get('timezone') || 'browser';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return sendJson(response, 400, { error: 'date must be YYYY-MM-DD.' });
+  if (!(timezone in DASHBOARD_TIMEZONES)) return sendJson(response, 400, { error: 'Unsupported timezone.' });
+
+  const timezoneName = timezone === 'browser'
+    ? requestUrl.searchParams.get('timezone_name')
+    : DASHBOARD_TIMEZONES[timezone];
+  if (!timezoneName || !isSupportedTimezone(timezoneName)) {
+    return sendJson(response, 400, { error: 'A valid browser timezone is required.' });
+  }
+
+  const zone = timezoneName;
+  const bounds = await db.query(
+    `select ($1::date::timestamp at time zone $2) as start_at,
+            (($1::date + interval '1 day')::timestamp at time zone $2) as end_at`,
+    [date, zone]
+  );
+  const { start_at: startAt, end_at: endAt } = bounds.rows[0];
+
+  const [users, sessions, audits, prompts, applications, queue] = await Promise.all([
+    db.query(`
+      select distinct on (ds.telegram_chat_id)
+        ds.telegram_chat_id, ds.client_id, c.full_name, c.company_email, c.applywizz_id
+      from dice_sessions ds
+      left join clients c on c.id = ds.client_id
+      order by ds.telegram_chat_id, ds.updated_at desc nulls last`),
+    db.query(`
+      select telegram_chat_id, session_started_at, session_deadline, next_scan_at,
+             last_decision, last_decision_at, current_prompt_url,
+             current_prompt_sent_at, current_prompt_expires_at
+      from workflow_sessions
+      where session_started_at < $2 and coalesce(session_deadline, session_started_at) >= $1`, [startAt, endAt]),
+    db.query(`
+      select id, telegram_chat_id, event, details, created_at
+      from workflow_audit_logs
+      where created_at >= $1 and created_at < $2
+      order by created_at asc, id asc`, [startAt, endAt]),
+    db.query(`
+      select id, telegram_chat_id, prompt_token, url, sent_at, expires_at,
+             decision, clicked_at
+      from workflow_prompt_events
+      where sent_at >= $1 and sent_at < $2
+      order by sent_at asc, id asc`, [startAt, endAt]),
+    db.query(`
+      select id, client_id, telegram_chat_id, job_id, url, job_name, status, applied_at
+      from applications
+      where applied_at >= $1 and applied_at < $2
+      order by applied_at asc, id asc`, [startAt, endAt]),
+    db.query(`
+      select id, client_id, telegram_chat_id, job_id, url, status, available_at,
+             created_at, started_at, finished_at, attempts, max_attempts, last_error
+      from apply_queue
+      where created_at >= $1 and created_at < $2
+      order by created_at asc, id asc`, [startAt, endAt]),
+  ]);
+
+  const userMap = new Map(users.rows.map((user) => [String(user.telegram_chat_id), {
+    ...user,
+    has_activity: false,
+    session: sessions.rows.find((row) => String(row.telegram_chat_id) === String(user.telegram_chat_id)) || null,
+    audit_logs: [],
+    prompt_events: [],
+    applications: [],
+    queue: [],
+  }]));
+  const ensureUser = (chatId) => {
+    const key = String(chatId);
+    if (!userMap.has(key)) userMap.set(key, {
+      telegram_chat_id: chatId,
+      full_name: null,
+      company_email: null,
+      applywizz_id: null,
+      has_activity: false,
+      session: null,
+      audit_logs: [],
+      prompt_events: [],
+      applications: [],
+      queue: [],
+    });
+    return userMap.get(key);
+  };
+
+  audits.rows.forEach((row) => { const user = ensureUser(row.telegram_chat_id); user.audit_logs.push(row); user.has_activity = true; });
+  prompts.rows.forEach((row) => { const user = ensureUser(row.telegram_chat_id); user.prompt_events.push(row); user.has_activity = true; });
+  applications.rows.forEach((row) => { const user = ensureUser(row.telegram_chat_id); user.applications.push(row); user.has_activity = true; });
+  queue.rows.forEach((row) => { const user = ensureUser(row.telegram_chat_id); user.queue.push(row); user.has_activity = true; });
+
+  sendJson(response, 200, {
+    date,
+    timezone,
+    timezone_name: timezoneName,
+    start_at: startAt,
+    end_at: endAt,
+    users: [...userMap.values()].sort((left, right) => String(left.full_name || left.company_email || left.telegram_chat_id).localeCompare(String(right.full_name || right.company_email || right.telegram_chat_id))),
+  });
+}
+
+function isSupportedTimezone(timezoneName) {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: timezoneName }).format();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readJson(request) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    request.on('data', (chunk) => {
+      body += chunk;
+      if (body.length > 1024 * 1024) reject(new Error('Request body is too large.'));
+    });
+    request.on('end', () => {
+      try { resolve(body ? JSON.parse(body) : {}); } catch (error) { reject(new Error('Invalid JSON body.')); }
+    });
+    request.on('error', reject);
+  });
+}
+
+function sendFile(response, fileName, contentType) {
+  const filePath = path.join(dashboardRoot, fileName);
+  if (!fs.existsSync(filePath)) return sendJson(response, 404, { error: 'Dashboard asset not found.' });
+  response.writeHead(200, { 'content-type': contentType, 'cache-control': 'no-store' });
+  response.end(fs.readFileSync(filePath));
+}
+
+function sendJson(response, status, payload) {
+  response.writeHead(status, {
+    'content-type': 'application/json; charset=utf-8',
+    'cache-control': 'no-store',
+  });
+  response.end(JSON.stringify(payload));
+}
+
+function hashToken(token) {
+  return crypto.createHash('sha256').update(token).digest('hex');
+}
+
+function readCookie(request, name) {
+  const cookies = String(request.headers.cookie || '').split(';');
+  const item = cookies.find((cookie) => cookie.trim().startsWith(`${name}=`));
+  return item ? decodeURIComponent(item.trim().slice(name.length + 1)) : null;
+}
+
+function setCookie(response, name, value, maxAge) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  response.setHeader('set-cookie', `${name}=${encodeURIComponent(value)}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${maxAge}${secure}`);
+}
+
+module.exports = {
+  createDashboardServer,
+  DASHBOARD_TIMEZONES,
 };
 </file>
 
@@ -2962,6 +2718,294 @@ function createWorkflowStateStore(supabase) {
 module.exports = { createWorkflowStateStore };
 </file>
 
+<file path="public/dashboard.css">
+:root {
+  color-scheme: light;
+  --ink: #17221e;
+  --muted: #68756f;
+  --paper: #f4f1e8;
+  --panel: #fffdf7;
+  --line: #d8d4c7;
+  --accent: #c95638;
+  --accent-dark: #8d3425;
+  --green: #2f7358;
+  font-family: Georgia, 'Times New Roman', serif;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--ink); background: radial-gradient(circle at 15% 0%, #fff9e8 0, var(--paper) 40%, #e6eee6 100%); min-height: 100vh; }
+.shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 42px 0 72px; }
+.topbar { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; border-bottom: 1px solid var(--line); padding-bottom: 24px; }
+.eyebrow { color: var(--accent); font: 700 12px/1.2 Arial, sans-serif; letter-spacing: 2px; text-transform: uppercase; margin: 0 0 10px; }
+h1, h2, h3, p { margin-top: 0; }
+h1 { font-size: clamp(34px, 6vw, 68px); line-height: .96; margin-bottom: 12px; font-weight: 500; }
+h2 { font-size: 25px; font-weight: 500; }
+.muted { color: var(--muted); font: 14px/1.5 Arial, sans-serif; }
+.controls { display: flex; align-items: end; flex-wrap: wrap; gap: 16px; padding: 22px 0; }
+label { display: grid; gap: 7px; color: var(--muted); font: 12px/1.2 Arial, sans-serif; text-transform: uppercase; letter-spacing: .8px; }
+input, select { border: 1px solid var(--line); border-radius: 4px; background: var(--panel); color: var(--ink); padding: 11px 12px; font: 16px Georgia, serif; text-transform: none; letter-spacing: 0; }
+.summary { margin-left: auto; color: var(--green); font: 700 14px Arial, sans-serif; }
+.button { border: 0; border-radius: 4px; background: var(--accent); color: white; cursor: pointer; padding: 11px 16px; font: 700 13px Arial, sans-serif; }
+.button:hover { background: var(--accent-dark); }
+.button.secondary { background: transparent; border: 1px solid var(--line); color: var(--ink); }
+.users { display: grid; gap: 10px; }
+.user { background: rgba(255, 253, 247, .84); border: 1px solid var(--line); border-radius: 4px; overflow: hidden; }
+.user summary { cursor: pointer; list-style: none; display: grid; grid-template-columns: minmax(180px, 1.3fr) minmax(120px, 1fr) auto; gap: 18px; align-items: center; padding: 18px 20px; }
+.user summary::-webkit-details-marker { display: none; }
+.user summary:hover { background: #fff9e9; }
+.user-name { font-size: 20px; }
+.user-email, .user-meta { color: var(--muted); font: 13px/1.4 Arial, sans-serif; }
+.badge { color: var(--green); font: 700 12px Arial, sans-serif; text-align: right; }
+.badge.idle { color: var(--muted); }
+.user-body { border-top: 1px solid var(--line); padding: 20px; display: grid; gap: 24px; max-height: 62vh; overflow-y: auto; }
+.timer { display: flex; flex-wrap: wrap; gap: 12px; }
+.metric { min-width: 150px; padding: 12px; border-left: 3px solid var(--accent); background: #f8f5eb; }
+.metric strong { display: block; font-size: 18px; font-weight: 500; }
+.metric span { color: var(--muted); font: 11px Arial, sans-serif; text-transform: uppercase; }
+.application-list { display: grid; gap: 10px; }
+.application-item { min-width: 0; padding: 12px; border-left: 3px solid var(--green); background: #f8f5eb; }
+.application-item strong, .application-item small { display: block; overflow-wrap: anywhere; }
+.application-item strong { font-size: 15px; font-weight: 500; }
+.application-item time, .application-item small { color: var(--muted); font: 12px/1.4 Arial, sans-serif; }
+.application-status { display: inline-block; margin: 6px 0; color: var(--green); font: 700 12px Arial, sans-serif; text-transform: uppercase; }
+.columns { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; }
+.panel h3 { font-size: 16px; border-bottom: 1px solid var(--line); padding-bottom: 8px; margin-bottom: 0; }
+.log { display: grid; grid-template-columns: 155px 1fr; gap: 12px; border-bottom: 1px solid #e7e2d5; padding: 10px 0; font: 13px/1.45 Arial, sans-serif; }
+.log time { color: var(--muted); }
+.log strong { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; }
+.log pre { white-space: pre-wrap; margin: 4px 0 0; color: var(--muted); font: 12px/1.4 ui-monospace, monospace; }
+.login-panel { max-width: 420px; background: var(--panel); border: 1px solid var(--line); padding: 24px; }
+.login-panel form { display: grid; gap: 16px; }
+.error { color: var(--accent-dark); font: 13px Arial, sans-serif; min-height: 18px; }
+@media (max-width: 700px) {
+  .shell { width: min(100% - 20px, 1180px); padding-top: 24px; }
+  .topbar { align-items: flex-start; }
+  .user summary { grid-template-columns: 1fr auto; }
+  .user-email { grid-column: 1 / -1; grid-row: 2; }
+  .badge { grid-column: 2; grid-row: 1; }
+  .columns { grid-template-columns: 1fr; }
+  .log { grid-template-columns: 1fr; gap: 4px; }
+  .summary { margin-left: 0; width: 100%; }
+  .user-body { max-height: 55vh; }
+}
+</file>
+
+<file path="public/dashboard.html">
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Workflow dashboard</title>
+  <link rel="stylesheet" href="/dashboard.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">Operations</p>
+        <h1>Workflow dashboard</h1>
+        <p class="muted" id="status">Loading...</p>
+      </div>
+      <button class="button secondary" id="logout">Log out</button>
+    </header>
+
+    <section class="controls" aria-label="Dashboard filters">
+      <label>Date <input type="date" id="date"></label>
+      <label>Timezone
+        <select id="timezone">
+          <option value="browser">Browser local</option>
+          <option value="UTC">UTC</option>
+          <option value="Pacific">Pacific</option>
+          <option value="Mountain">Mountain</option>
+          <option value="Central">Central</option>
+          <option value="Eastern">Eastern</option>
+        </select>
+      </label>
+      <div class="summary" id="summary"></div>
+    </section>
+
+    <section id="login" class="login-panel" hidden>
+      <h2>Operator sign in</h2>
+      <form id="login-form">
+        <label>Email <input type="email" id="email" required autocomplete="username"></label>
+        <label>Password <input type="password" id="password" required autocomplete="current-password"></label>
+        <button class="button" type="submit">Sign in</button>
+        <p class="error" id="login-error"></p>
+      </form>
+    </section>
+
+    <section id="users" class="users" hidden></section>
+  </main>
+  <script src="/dashboard.js"></script>
+</body>
+</html>
+</file>
+
+<file path="public/dashboard.js">
+const state = { timer: null, data: null };
+const dateInput = document.querySelector('#date');
+const timezoneInput = document.querySelector('#timezone');
+const statusText = document.querySelector('#status');
+const summary = document.querySelector('#summary');
+const users = document.querySelector('#users');
+const loginPanel = document.querySelector('#login');
+
+const today = new Date();
+dateInput.value = [today.getFullYear(), String(today.getMonth() + 1).padStart(2, '0'), String(today.getDate()).padStart(2, '0')].join('-');
+
+dateInput.addEventListener('change', loadDashboard);
+timezoneInput.addEventListener('change', loadDashboard);
+document.querySelector('#logout').addEventListener('click', async () => {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  showLogin();
+});
+document.querySelector('#login-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const error = document.querySelector('#login-error');
+  error.textContent = '';
+  const response = await fetch('/api/auth/login', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      email: document.querySelector('#email').value,
+      password: document.querySelector('#password').value,
+    }),
+  });
+  if (!response.ok) {
+    error.textContent = (await response.json()).error || 'Sign in failed.';
+    return;
+  }
+  await loadDashboard();
+});
+
+async function loadDashboard() {
+  const params = new URLSearchParams({ date: dateInput.value, timezone: timezoneInput.value });
+  if (timezoneInput.value === 'browser') {
+    params.set('timezone_name', getBrowserTimezone());
+  }
+  const response = await fetch(`/api/dashboard?${params}`);
+  if (response.status === 401) return showLogin();
+  if (!response.ok) {
+    statusText.textContent = 'Dashboard data could not be loaded.';
+    return;
+  }
+  state.data = await response.json();
+  render(state.data);
+  startPolling();
+}
+
+function render(data) {
+  loginPanel.hidden = true;
+  users.hidden = false;
+  const active = data.users.filter((user) => user.has_activity).length;
+  summary.textContent = `${data.users.length} users · ${active} active · refreshed ${new Date().toLocaleTimeString()}`;
+  statusText.textContent = `${data.date} · ${data.timezone}`;
+  users.innerHTML = data.users.map((user) => renderUser(user, data.timezone_name)).join('');
+  startTimers();
+}
+
+function renderUser(user, timezoneName) {
+  const label = escapeHtml(user.full_name || user.company_email || `Telegram ${user.telegram_chat_id}`);
+  const email = escapeHtml(user.company_email || `Telegram ${user.telegram_chat_id}`);
+  const session = user.session;
+  const logs = user.audit_logs.map((row) => ({ time: row.created_at, type: row.event, details: row.details }));
+  user.prompt_events.forEach((row) => logs.push({ time: row.sent_at, type: `prompt: ${row.decision || 'waiting'}`, details: { url: row.url, expires_at: row.expires_at, clicked_at: row.clicked_at } }));
+  user.applications.forEach((row) => logs.push({ time: row.applied_at, type: `application: ${row.status}`, details: { job_name: row.job_name, url: row.url } }));
+  user.queue.forEach((row) => logs.push({ time: row.created_at, type: `queue: ${row.status}`, details: { url: row.url, available_at: row.available_at, started_at: row.started_at, finished_at: row.finished_at } }));
+  logs.sort((left, right) => new Date(left.time) - new Date(right.time));
+  const logHtml = logs.length ? logs.map((log) => `<div class="log"><time>${formatTime(log.time, timezoneName)}</time><div><strong>${escapeHtml(log.type)}</strong><pre>${escapeHtml(JSON.stringify(log.details || {}, null, 2))}</pre></div></div>`).join('') : '<p class="muted">No activity for this date.</p>';
+  const timer = session ? `<div class="timer"><div class="metric"><strong>${formatTime(session.session_started_at, timezoneName)}</strong><span>9-hour window start</span></div><div class="metric"><strong>${formatTime(session.session_deadline, timezoneName)}</strong><span>window deadline</span></div><div class="metric"><strong data-countdown="${escapeHtml(session.session_deadline || '')}">${remaining(session.session_deadline)}</strong><span>window remaining</span></div><div class="metric"><strong>${formatTime(session.next_scan_at, timezoneName)}</strong><span>next link</span></div></div>` : '<p class="muted">No workflow session recorded for this date.</p>';
+  return `<details class="user"><summary><span class="user-name">${label}</span><span class="user-email">${email}</span><span class="badge ${user.has_activity ? '' : 'idle'}">${user.has_activity ? `${logs.length} events` : 'No activity'}</span></summary><div class="user-body">${timer}<div class="columns"><section class="panel"><h3>Timeline</h3>${logHtml}</section><section class="panel"><h3>Application status</h3>${renderCurrent(user, timezoneName)}</section></div></div></details>`;
+}
+
+function renderCurrent(user, timezoneName) {
+  if (!user.applications.length) return '<p class="muted">No application status recorded.</p>';
+  return `<div class="application-list">${user.applications.map((application) => `<article class="application-item"><strong>${escapeHtml(application.job_name || 'Unnamed job')}</strong><span class="application-status">${escapeHtml(application.status || 'Unknown')}</span><time>${formatTime(application.applied_at, timezoneName)}</time><small>${escapeHtml(application.url || '')}</small></article>`).join('')}</div>`;
+}
+
+function showLogin() {
+  if (state.timer) clearInterval(state.timer);
+  loginPanel.hidden = false;
+  users.hidden = true;
+  statusText.textContent = 'Sign in to view workflow activity.';
+}
+
+function startPolling() {
+  if (state.timer) return;
+  state.timer = setInterval(loadDashboard, 30 * 60 * 1000);
+}
+
+function startTimers() {
+  if (state.countdownTimer) clearInterval(state.countdownTimer);
+  state.countdownTimer = setInterval(() => {
+    document.querySelectorAll('[data-countdown]').forEach((element) => {
+      element.textContent = remaining(element.dataset.countdown);
+    });
+  }, 1000);
+}
+
+function remaining(deadline) {
+  const seconds = Math.max(0, Math.floor((new Date(deadline).getTime() - Date.now()) / 1000));
+  const hours = Math.floor(seconds / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const remainder = seconds % 60;
+  return `${hours}h ${String(minutes).padStart(2, '0')}m ${String(remainder).padStart(2, '0')}s`;
+}
+
+function formatTime(value, timezoneName) {
+  if (!value) return '—';
+  return new Date(value).toLocaleString(undefined, { timeZone: timezoneName });
+}
+
+function getBrowserTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+}
+
+function escapeHtml(value) {
+  return String(value ?? '').replace(/[&<>"']/g, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[character]));
+}
+
+loadDashboard();
+</file>
+
+<file path="scripts/create-operator.js">
+require('dotenv').config();
+
+const bcrypt = require('bcryptjs');
+const { createPool } = require('../lib/supabase');
+
+const args = new Map();
+for (let index = 2; index < process.argv.length; index += 1) {
+  const [key, value] = process.argv[index].split('=', 2);
+  if (key && value) args.set(key.replace(/^--/, ''), value);
+}
+
+const email = String(args.get('email') || '').trim().toLowerCase();
+const password = String(args.get('password') || '');
+
+if (!email || !email.includes('@') || password.length < 12) {
+  console.error('Usage: npm run create-operator -- --email=operator@example.com --password="at-least-12-characters"');
+  process.exit(1);
+}
+
+(async () => {
+  const db = createPool();
+  const passwordHash = await bcrypt.hash(password, 12);
+  await db.query(
+    `insert into operator_accounts (email, password_hash)
+     values ($1, $2)
+     on conflict (email) do update set password_hash = excluded.password_hash, disabled = false`,
+    [email, passwordHash]
+  );
+  console.log(`Operator account ready: ${email}`);
+  await db.end();
+})().catch(async (error) => {
+  console.error(`Could not create operator: ${error.message}`);
+  process.exitCode = 1;
+});
+</file>
+
 <file path="scripts/import-clients.js">
 require('dotenv').config();
 
@@ -3400,6 +3444,28 @@ node_modules
 .git
 .gitignore
 *.log
+</file>
+
+<file path=".env.example">
+DATABASE_URL=postgresql://user:password@azure-host:5432/database?sslmode=require
+DATABASE_SSL_REJECT_UNAUTHORIZED=false
+DATABASE_POOL_MAX=10
+PORT=3000
+
+BOT_TOKEN=
+CHAT_ID=
+DICE_PASSWORD=
+SENDGRID_API_KEY=
+SENDER_EMAIL=noreply@applywizz.com
+BROWSERBASE_API_KEY=
+BROWSERBASE_PROJECT_ID=
+BROWSERBASE_MAX_CONCURRENT=1
+USE_BROWSERBASE=false
+</file>
+
+<file path=".gitignore">
+.env
+node_modules/
 </file>
 
 <file path="Dockerfile">
