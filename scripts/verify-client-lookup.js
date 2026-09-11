@@ -1,13 +1,13 @@
 require('dotenv').config();
 
-const { createServiceClient } = require('../lib/supabase');
+const { createServiceClient } = require('../lib/azure');
 
 const email = (process.argv[2] || 'ramgopalvarma8520@gmail.com').trim();
 
 async function main() {
-  const supabase = createServiceClient();
-  const { data: client, error } = await supabase
-    .from('clients')
+  const azure = createServiceClient();
+  const { data: client, error } = await azure
+    .from('clients_additional_info')
     .select('id, applywizz_id, company_email, full_name')
     .eq('company_email', email)
     .maybeSingle();
@@ -17,7 +17,7 @@ async function main() {
     throw new Error(`No client found for ${email}`);
   }
 
-  const { data: profile, error: profileError } = await supabase
+  const { data: profile, error: profileError } = await azure
     .from('client_profiles')
     .select('id, applywizz_id, role, resume_path')
     .eq('id', client.id)

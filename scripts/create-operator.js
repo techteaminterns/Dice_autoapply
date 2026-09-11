@@ -1,6 +1,6 @@
 require('dotenv').config();
 
-const { createPool } = require('../lib/supabase');
+const { createPool } = require('../lib/azure');
 
 const args = new Map();
 for (let index = 2; index < process.argv.length; index += 1) {
@@ -20,7 +20,7 @@ if (!email || !email.includes('@')) {
 (async () => {
   const db = createPool();
   await db.query(
-    `insert into operator_accounts (email, name, role, disabled)
+    `insert into dice_ca_accounts (email, name, role, disabled)
      values ($1, $2, $3, false)
      on conflict (email) do update set
        name = excluded.name,

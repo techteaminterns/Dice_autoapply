@@ -1,5 +1,5 @@
 -- Migration: 003_operator_otp.sql
--- Remove password_hash from operator_accounts, add name and role, and create operator_otps table.
+-- Remove password_hash from dice_ca_accounts, add name and role, and create operator_otps table.
 
 alter table public.operator_accounts
   drop column if exists password_hash;

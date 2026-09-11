@@ -3,7 +3,7 @@ require('dotenv').config();
 const crypto = require('crypto');
 const { Bot } = require('node-telegram-bot-api');
 const sgMail = require('@sendgrid/mail');
-const { createPool, createServiceClient } = require('./lib/supabase');
+const { createPool, createServiceClient } = require('./lib/azure');
 const { createDashboardServer } = require('./lib/dashboard-server');
 const { fillCurrentStep, isVisibleEnabled, loadApplyProfile } = require('./lib/dice-apply-questions');
 const { openBrowser, closeBrowser, useBrowserbase, maxConcurrent } = require('./lib/browser');
@@ -24,10 +24,10 @@ if (!dicePassword) {
   throw new Error('DICE_PASSWORD must be set in the environment.');
 }
 
-const supabase = createServiceClient();
+const azure = createServiceClient();
 const dashboardServer = createDashboardServer({ db: createPool() });
-const applyQueue = createApplyQueue(supabase);
-const workflowStateStore = createWorkflowStateStore(supabase);
+const applyQueue = createApplyQueue(azure);
+const workflowStateStore = createWorkflowStateStore(azure);
 let applyWorkerController = null;
 
 sgMail.setApiKey(sendGridApiKey);
@@ -186,7 +186,7 @@ function hashOtp(code) {
 }
 
 async function saveOTP(chatId, email, otp) {
-  const { error } = await supabase.from('otp_challenges').upsert({
+  const { error } = await azure.from('dice_telegram_otps').upsert({
     telegram_chat_id: chatId,
     email,
     code_hash: hashOtp(otp),
@@ -197,8 +197,8 @@ async function saveOTP(chatId, email, otp) {
 }
 
 async function verifyOTP(chatId, enteredCode) {
-  const { data, error } = await supabase
-    .from('otp_challenges')
+  const { data, error } = await azure
+    .from('dice_telegram_otps')
     .select('code_hash, expires_at')
     .eq('telegram_chat_id', chatId)
     .maybeSingle();
@@ -214,7 +214,7 @@ async function verifyOTP(chatId, enteredCode) {
 }
 
 async function deleteOTP(chatId) {
-  const { error } = await supabase.from('otp_challenges').delete().eq('telegram_chat_id', chatId);
+  const { error } = await azure.from('dice_telegram_otps').delete().eq('telegram_chat_id', chatId);
   if (error) console.error(`[User ${chatId}] Failed to delete OTP:`, error.message);
 }
 
@@ -231,7 +231,7 @@ async function sendOTPEmail(email, otp, chatId = null) {
       subject: 'Your OTP Verification Code',
       html: `<p>Your OTP code is: <strong>${otp}</strong></p><p>This code expires in 5 minutes.</p>`,
     });
-    if (chatId) await audit(chatId, 'otp_sent', { email }).catch(() => {});
+    if (chatId) await audit(chatId, 'otp_sent', { email }).catch(() => { });
     console.log(`[OTP] Sent to ${email}`);
     return true;
   } catch (error) {
@@ -242,8 +242,8 @@ async function sendOTPEmail(email, otp, chatId = null) {
 
 // === USER MATCHING HELPERS ===
 async function findUserByEmail(companyEmail) {
-  const { data, error } = await supabase
-    .from('clients')
+  const { data, error } = await azure
+    .from('clients_additional_info')
     .select('id, applywizz_id, company_email, full_name')
     .eq('company_email', companyEmail.trim())
     .maybeSingle();
@@ -257,7 +257,7 @@ async function findUserByEmail(companyEmail) {
 }
 
 async function linkTelegramChat(chatId, clientId) {
-  const { error } = await supabase.from('telegram_links').upsert(
+  const { error } = await azure.from('dice_telegram_connection').upsert(
     {
       telegram_chat_id: chatId,
       client_id: clientId,
@@ -272,8 +272,8 @@ async function linkTelegramChat(chatId, clientId) {
 }
 
 async function getClientIdForChat(chatId) {
-  const { data, error } = await supabase
-    .from('telegram_links')
+  const { data, error } = await azure
+    .from('dice_telegram_connection')
     .select('client_id')
     .eq('telegram_chat_id', chatId)
     .maybeSingle();
@@ -290,7 +290,7 @@ function storageStateIsValid(storageState) {
 }
 
 async function readActiveSession(chatId) {
-  const { data, error } = await supabase
+  const { data, error } = await azure
     .from('dice_sessions')
     .select('telegram_chat_id, client_id, email, applywizz_id, storage_state')
     .eq('telegram_chat_id', chatId)
@@ -318,7 +318,7 @@ async function saveSession(context, chatId, email, applywizz_id, clientId) {
     throw new Error('Cannot save Dice session: Telegram chat is not linked to a client.');
   }
 
-  const { error } = await supabase.from('dice_sessions').upsert({
+  const { error } = await azure.from('dice_sessions').upsert({
     telegram_chat_id: chatId,
     client_id: resolvedClientId,
     email,
@@ -338,7 +338,7 @@ async function saveSession(context, chatId, email, applywizz_id, clientId) {
 }
 
 async function getAllRegisteredUsers() {
-  const { data, error } = await supabase.from('dice_sessions').select('telegram_chat_id');
+  const { data, error } = await azure.from('dice_sessions').select('telegram_chat_id');
   if (error) {
     console.error('Failed to list Dice sessions:', error.message);
     return [];
@@ -378,7 +378,7 @@ async function runLogin(chatId, credentials, isBackgroundRefresh = false) {
       console.log(`[User ${chatId}] Login browser session: ${sessionId}`);
       if (!isBackgroundRefresh) {
         await sendMessage(chatId, 'Opening remote browser for login...\n');
-          // Replay: https://www.browserbase.com/sessions/${sessionId}`);
+        // Replay: https://www.browserbase.com/sessions/${sessionId}`);
       }
     }
 
@@ -435,10 +435,20 @@ async function refreshLogin(chatId) {
 }
 
 // === JOBS & APPLICATIONS ===
-async function readJobUrls(scrapedAfter = null) {
-  const { data, error } = await supabase
-    .from('jobs')
+async function readJobUrls(scrapedAfter = null, applywizzId = null) {
+  let query = azure
+    .from('dice_scraped_jobs')
     .select('url, title, company, applywizz_id, company_email, scraped_at');
+
+  if (applywizzId) {
+    query = query.eq('applywizz_id', applywizzId);
+  }
+
+  if (scrapedAfter) {
+    query = query.gte('scraped_at', new Date(scrapedAfter).toISOString());
+  }
+
+  const { data, error } = await query;
 
   if (error) {
     console.error('Failed to load jobs:', error.message);
@@ -465,8 +475,8 @@ async function saveAppliedJob(chatId, url, jobName, status) {
     return;
   }
 
-  const { data: job } = await supabase.from('jobs').select('id').eq('url', url).maybeSingle();
-  const { error } = await supabase.from('applications').upsert(
+  const { data: job } = await azure.from('dice_scraped_jobs').select('id').eq('url', url).maybeSingle();
+  const { error } = await azure.from('dice_applied_jobs').upsert(
     {
       client_id: clientId,
       telegram_chat_id: chatId,
@@ -490,8 +500,8 @@ async function hasHandledJob(chatId, url) {
   const clientId = await getClientIdForChat(chatId);
   if (!clientId) return false;
 
-  const { data, error } = await supabase
-    .from('applications')
+  const { data, error } = await azure
+    .from('dice_applied_jobs')
     .select('id')
     .eq('client_id', clientId)
     .eq('url', url)
@@ -502,13 +512,13 @@ async function hasHandledJob(chatId, url) {
     return false;
   }
   if (data) {
-    await applyQueue.clearStaleClientJobs(clientId).catch(() => {});
+    await applyQueue.clearStaleClientJobs(clientId).catch(() => { });
     return true;
   }
 
   const handled = await applyQueue.hasActiveOrFinishedQueueItem(clientId, url);
   if (handled) {
-    await applyQueue.clearStaleClientJobs(clientId).catch(() => {});
+    await applyQueue.clearStaleClientJobs(clientId).catch(() => { });
   }
   return handled;
 }
@@ -560,7 +570,7 @@ async function applyToJobOnPage(page, jobName, url, chatId) {
   }
 
   const clientId = await getClientIdForChat(chatId);
-  const applyProfile = await loadApplyProfile(supabase, clientId);
+  const applyProfile = await loadApplyProfile(azure, clientId);
   console.log('[apply-questions] loaded profile', {
     clientId: clientId || null,
     hasOffice: applyProfile.can_work_3_days_in_office ?? null,
@@ -621,7 +631,7 @@ async function applyToJobOnPage(page, jobName, url, chatId) {
     await submitButton.first().scrollIntoViewIfNeeded();
     await submitButton.first().click();
     await applicationPage.waitForLoadState('networkidle').catch(() => { });
-    await waitRandom(1,4, 'After Submit opens next page');
+    await waitRandom(1, 4, 'After Submit opens next page');
 
     await saveAppliedJob(chatId, url, jobName, 'completed');
     sendMessage(chatId, `✅ Application submitted successfully for:\n${jobName}`);
@@ -690,7 +700,7 @@ async function executeQueuedApply(job) {
           throw error;
         }
       } finally {
-        if (page && !page.isClosed()) await page.close().catch(() => {});
+        if (page && !page.isClosed()) await page.close().catch(() => { });
       }
     }
   } finally {
@@ -732,7 +742,7 @@ async function runJobsLoop(chatId) {
     if (state.currentPromptToken && state.currentPromptExpiresAt <= Date.now()) {
       const missedUrl = state.currentPromptUrl;
       const missedAt = state.currentPromptExpiresAt;
-      await workflowStateStore.recordDecision(chatId, state.currentPromptToken, 'missed', missedAt).catch(() => {});
+      await workflowStateStore.recordDecision(chatId, state.currentPromptToken, 'missed', missedAt).catch(() => { });
       state.currentPromptToken = null;
       state.currentPromptUrl = null;
       state.currentPromptSentAt = null;
@@ -747,10 +757,13 @@ async function runJobsLoop(chatId) {
       continue;
     }
 
+    const clientId = await getClientIdForChat(chatId);
+    const applyProfile = clientId ? await loadApplyProfile(azure, clientId) : {};
+
     const scrapedAfter = state.newdayRequestedAt
       ? state.newdayRequestedAt - NEWDAY_LOOKBACK_MS
       : null;
-    const jobs = await readJobUrls(scrapedAfter);
+    const jobs = await readJobUrls(scrapedAfter, applyProfile.applywizz_id);
     const urls = jobs.map((job) => job.url);
     const hasNewUrl = urls.some((url) => !state.knownJobUrls.has(url));
     state.knownJobUrls = new Set(urls);
@@ -767,9 +780,8 @@ async function runJobsLoop(chatId) {
 
     let offeredAny = false;
     let unhandledUrlFound = false;
-    const clientId = await getClientIdForChat(chatId);
-    const applyProfile = clientId ? await loadApplyProfile(supabase, clientId) : {};
 
+    console.log(`[User ${chatId}] Processing ${jobs.length} jobs. Profile AWL ID: '${applyProfile.applywizz_id}'`);
     for (const job of jobs) {
       const { url } = job;
       if (!state.jobRunnerActive || state.runGeneration !== runGeneration) {
@@ -778,6 +790,7 @@ async function runJobsLoop(chatId) {
       }
 
       if (await hasHandledJob(chatId, url)) {
+        console.log(`[User ${chatId}] Skipping ${url}: Already handled (in applications or queue).`);
         continue;
       }
 
@@ -804,8 +817,8 @@ async function runJobsLoop(chatId) {
         break;
       }
 
-      if (String(job.applywizzId || '') !== String(applyProfile.applywizz_id || '')
-        || String(job.companyEmail || '').trim().toLowerCase() !== String(applyProfile.company_email || '').trim().toLowerCase()) {
+      if (String(job.applywizzId || '') !== String(applyProfile.applywizz_id || '')) {
+        console.log(`[User ${chatId}] Skipping ${url}: applywizz_id mismatch. Job: '${job.applywizzId}', Profile: '${applyProfile.applywizz_id}'`);
         continue;
       }
 
@@ -925,7 +938,7 @@ async function runJobsLoop(chatId) {
         delayMs: availableAt - Date.now(),
       });
 
-      const { data: jobRow } = await supabase.from('jobs').select('id').eq('url', url).maybeSingle();
+      const { data: jobRow } = await azure.from('dice_scraped_jobs').select('id').eq('url', url).maybeSingle();
 
       try {
         const { row, created, alreadyDone, activeClientJob } = await applyQueue.enqueueApplyJob({
@@ -1077,7 +1090,7 @@ async function runSignInWorkflow(chatId, { greet = false } = {}) {
     }
 
     await linkTelegramChat(chatId, user.id);
-    
+
 
     await runLogin(chatId, { email, applywizz_id: user.applywizz_id, clientId: user.id });
 
@@ -1239,13 +1252,13 @@ bot.on('callback_query', async (ctx) => {
   }
 
   try {
-    await ctx.answerCallbackQuery().catch(() => {});
+    await ctx.answerCallbackQuery().catch(() => { });
     if (message) {
       await bot.api.editMessageReplyMarkup({
         chat_id: message.chat?.id || chatId,
         message_id: message.message_id,
         reply_markup: { inline_keyboard: [] },
-      }).catch(() => {});
+      }).catch(() => { });
     }
   } catch (error) {
     console.warn('[callback] failed to clear button markup:', error.message);
@@ -1343,7 +1356,7 @@ process.once('SIGINT', shutdown);
 process.once('SIGTERM', shutdown);
 
 
-// npm run import-clients -- /full/path/to/new-clients.json --if i store a json file and want to push to supabase
+// npm run import-clients -- /full/path/to/new-clients.json --if i store a json file and want to push to azure
 //CLIENTS_API_URL=https://your-crm.example/clients
 //CLIENTS_API_TOKEN=optional-bearer-token
 //npm run import-clients ---if i want to connect api and add json files directly.

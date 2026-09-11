@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
-const { createServiceClient } = require('../lib/supabase');
+const { createServiceClient } = require('../lib/azure');
 const { mapImportItem } = require('./map-client-record');
 
 async function loadRecords() {
@@ -36,7 +36,7 @@ async function loadRecords() {
 }
 
 async function importRecords(records) {
-  const supabase = createServiceClient();
+  const azure = createServiceClient();
   let imported = 0;
   let failed = 0;
 
@@ -46,13 +46,13 @@ async function importRecords(records) {
       const { clientRow, profileRow } = mapImportItem(item);
       applywizzId = clientRow.applywizz_id;
 
-      const { error: clientError } = await supabase
-        .from('clients')
+      const { error: clientError } = await azure
+        .from('clients_additional_info')
         .upsert(clientRow, { onConflict: 'id' });
       if (clientError) throw clientError;
 
       if (profileRow) {
-        const { error: profileError } = await supabase
+        const { error: profileError } = await azure
           .from('client_profiles')
           .upsert(profileRow, { onConflict: 'id' });
         if (profileError) throw profileError;

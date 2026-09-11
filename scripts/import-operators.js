@@ -2,7 +2,7 @@ require('dotenv').config();
 
 const fs = require('fs');
 const path = require('path');
-const { createPool } = require('../lib/supabase');
+const { createPool } = require('../lib/azure');
 const { mapOperatorRecord } = require('./map-operator-record');
 
 async function loadOperatorRecords() {
@@ -48,7 +48,7 @@ async function importOperators(records) {
         identifier = mapped.email;
 
         await db.query(
-          `insert into operator_accounts (id, email, name, role, disabled)
+          `insert into dice_ca_accounts (id, email, name, role, disabled)
            values ($1, $2, $3, $4, $5)
            on conflict (email) do update set
              name = excluded.name,
