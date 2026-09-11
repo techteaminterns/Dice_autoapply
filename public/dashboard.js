@@ -19,6 +19,7 @@ const statusText = document.querySelector('#status');
 const navDashboardTab = document.querySelector('#nav-dashboard-tab');
 const navStatsTab = document.querySelector('#nav-stats-tab');
 const refreshBtn = document.querySelector('#refresh-btn');
+const syncMappingsBtn = document.querySelector('#sync-mappings-btn');
 const logoutBtn = document.querySelector('#logout');
 
 const loginPanel = document.querySelector('#login');
@@ -144,6 +145,48 @@ logoutBtn.addEventListener('click', async () => {
   showLogin();
 });
 
+if (syncMappingsBtn) {
+  syncMappingsBtn.addEventListener('click', async () => {
+    const originalText = syncMappingsBtn.textContent;
+    syncMappingsBtn.disabled = true;
+    syncMappingsBtn.textContent = '⏳ Syncing...';
+    statusText.textContent = 'Syncing CA-client mappings...';
+
+    try {
+      const res = await fetch('/api/sync-daily', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error || 'Sync failed');
+      }
+
+      syncMappingsBtn.textContent = '✓ Synced!';
+      syncMappingsBtn.style.background = '#d1fae5';
+      statusText.textContent = `Synced ${data.total_mappings || 0} mappings (${data.clients_updated || 0} updated)`;
+      await loadDashboard();
+
+      setTimeout(() => {
+        syncMappingsBtn.textContent = originalText;
+        syncMappingsBtn.style.background = '';
+        syncMappingsBtn.disabled = false;
+      }, 3000);
+    } catch (err) {
+      console.error('Sync failed:', err);
+      syncMappingsBtn.textContent = '❌ Failed';
+      syncMappingsBtn.style.background = '#fee2e2';
+      statusText.textContent = `Sync error: ${err.message}`;
+      setTimeout(() => {
+        syncMappingsBtn.textContent = originalText;
+        syncMappingsBtn.style.background = '';
+        syncMappingsBtn.disabled = false;
+      }, 3000);
+    }
+  });
+}
+
 // Step 1: Request OTP
 requestOtpForm.addEventListener('submit', async (event) => {
   event.preventDefault();
@@ -249,6 +292,22 @@ function render() {
   // Update Top Header Telemetry & Operator Name
   document.querySelector('#candidates-count').textContent = state.data.total_candidates ?? state.data.users.length;
   document.querySelector('#jobs-count').textContent = state.data.total_jobs ?? 0;
+
+  if (state.data.operator) {
+    state.operatorName = state.data.operator.name || state.data.operator.email || state.operatorName;
+    state.operatorRole = state.data.operator.role || 'operator';
+  }
+  const opTag = document.querySelector('.op-tag');
+  if (opTag) {
+    opTag.textContent = state.operatorRole === 'admin' ? 'ADMIN' : 'CA';
+    if (state.operatorRole === 'admin') {
+      opTag.style.background = '#1d4ed8';
+      opTag.style.color = '#ffffff';
+    } else {
+      opTag.style.background = '';
+      opTag.style.color = '';
+    }
+  }
   document.querySelector('#operator-name').textContent = state.operatorName || 'Operator';
 
   updateMasterTabUI();
@@ -297,7 +356,8 @@ function renderCandidateDirectory() {
     const email = String(u.company_email || '').toLowerCase();
     const awl = String(u.applywizz_id || '').toLowerCase();
     const chat = String(u.telegram_chat_id || '').toLowerCase();
-    return name.includes(state.searchQuery) || email.includes(state.searchQuery) || awl.includes(state.searchQuery) || chat.includes(state.searchQuery);
+    const cid = String(u.client_id || '').toLowerCase();
+    return name.includes(state.searchQuery) || email.includes(state.searchQuery) || awl.includes(state.searchQuery) || chat.includes(state.searchQuery) || cid.includes(state.searchQuery);
   });
 
   directoryCountBadge.textContent = `${filtered.length} / ${users.length}`;
@@ -308,17 +368,22 @@ function renderCandidateDirectory() {
   }
 
   candidateList.innerHTML = filtered.map((user) => {
-    const id = String(user.telegram_chat_id);
-    const isSelected = state.activeCandidateId === id;
-    const name = user.full_name || user.company_email || `User ${user.telegram_chat_id}`;
+    const id = String(user.client_id || user.telegram_chat_id || user.id);
+    const isSelected = String(state.activeCandidateId) === id;
+    const name = user.full_name || user.company_email || (user.telegram_chat_id ? `User ${user.telegram_chat_id}` : `Candidate ${id.slice(0, 8)}`);
     const initials = getInitials(name);
-    const awlId = user.applywizz_id ? `AWL-${user.applywizz_id}` : `AWL-${id}`;
+    const awlId = formatAwlId(user.applywizz_id, user.client_id || user.telegram_chat_id || id);
     const jobsCount = user.applications ? user.applications.length : 0;
-    const statusClass = user.has_activity ? 'active' : 'idle';
-    const statusText = user.has_activity ? `${user.audit_logs.length + user.applications.length} events` : 'No activity';
+    const isLinked = Boolean(user.telegram_chat_id);
+    const isLive = isLinked && Boolean(
+      user.has_activity ||
+      (user.session?.session_deadline && new Date(user.session.session_deadline).getTime() > Date.now())
+    );
+    const statusClass = !isLinked ? 'pending' : (isLive ? 'active' : 'idle');
+    const statusText = !isLinked ? 'Not Linked' : (isLive ? (user.has_activity ? `${user.audit_logs.length + user.applications.length} events` : 'Active') : 'Idle');
 
     return `
-      <div class="candidate-card ${isSelected ? 'active' : ''}" onclick="selectCandidate('${id}')">
+      <div class="candidate-card ${isSelected ? 'active' : ''}" onclick="selectCandidate('${escapeHtml(id)}')">
         <div class="card-top">
           <div class="avatar-awl">
             <span class="avatar">${initials}</span>
@@ -336,8 +401,8 @@ function renderCandidateDirectory() {
   }).join('');
 }
 
-window.selectCandidate = function(chatId) {
-  state.activeCandidateId = chatId;
+window.selectCandidate = function (candidateId) {
+  state.activeCandidateId = String(candidateId);
   state.selectedJobId = null; // Auto-select most recent job
   renderCandidateDirectory();
   renderCandidateWorkspace();
@@ -350,7 +415,11 @@ function renderCandidateWorkspace() {
     return;
   }
 
-  const user = state.data.users.find((u) => String(u.telegram_chat_id) === String(state.activeCandidateId));
+  const user = state.data.users.find((u) =>
+    String(u.client_id || u.telegram_chat_id || u.id) === String(state.activeCandidateId) ||
+    (u.client_id && String(u.client_id) === String(state.activeCandidateId)) ||
+    (u.telegram_chat_id && String(u.telegram_chat_id) === String(state.activeCandidateId))
+  );
   if (!user) {
     emptyWorkspace.hidden = false;
     candidateWorkspace.hidden = true;
@@ -426,19 +495,30 @@ function renderCandidateWorkspace() {
       </div>
     `;
     startTimers();
+  } else if (!user.telegram_chat_id) {
+    sessionMetricsGrid.innerHTML = `
+      <div class="metric-box" style="grid-column: 1 / -1; text-align: left; padding: 12px; background: #fffbeb; border: 1px dashed #f59e0b; border-radius: 6px;">
+        <span class="status-badge pending" style="display:inline-block; margin-bottom: 6px;">Pending Telegram Connection</span>
+        <p class="muted" style="margin: 0; font-size: 13px; color: #78350f;">This candidate is synced with Applywizz, but hasn't linked their Telegram account yet. Once they authenticate via Telegram, the bot will begin scanning and applying for jobs.</p>
+      </div>
+    `;
   } else {
-    sessionMetricsGrid.innerHTML = '<p class="muted">No active Telegram workflow session recorded for this date.</p>';
+    sessionMetricsGrid.innerHTML = '<p class="muted">Telegram linked. No active workflow session recorded for this date.</p>';
   }
 }
 
-window.selectJob = function(jobId) {
+window.selectJob = function (jobId) {
   state.selectedJobId = jobId;
   renderCandidateWorkspace();
 };
 
 function renderCandidateJobsSubTab() {
   if (!state.activeCandidateId || !state.data) return;
-  const user = state.data.users.find((u) => String(u.telegram_chat_id) === String(state.activeCandidateId));
+  const user = state.data.users.find((u) =>
+    String(u.client_id || u.telegram_chat_id || u.id) === String(state.activeCandidateId) ||
+    (u.client_id && String(u.client_id) === String(state.activeCandidateId)) ||
+    (u.telegram_chat_id && String(u.telegram_chat_id) === String(state.activeCandidateId))
+  );
   if (!user) return;
 
   const summary = user.prompts_summary || { total: 0, accepted: 0, rejected: 0, skipped: 0 };
@@ -505,7 +585,7 @@ function renderGlobalJobsTable() {
   tbody.innerHTML = filtered.map((app) => `
     <tr>
       <td><strong>${escapeHtml(app.client_name || app.client_email || `Chat ${app.telegram_chat_id}`)}</strong></td>
-      <td><span class="awl-pill">${escapeHtml(app.applywizz_id ? `AWL-${app.applywizz_id}` : `AWL-${app.telegram_chat_id}`)}</span></td>
+      <td><span class="awl-pill">${escapeHtml(formatAwlId(app.applywizz_id, app.telegram_chat_id))}</span></td>
       <td>${escapeHtml(app.job_name || 'Unnamed job')}</td>
       <td><span class="badge-pill green">${escapeHtml(app.status || 'Applied')}</span></td>
       <td>${formatTime(app.applied_at, state.data.timezone_name)}</td>
@@ -563,6 +643,13 @@ function getInitials(name) {
   const parts = String(name).trim().split(/\s+/);
   if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function formatAwlId(value, fallback) {
+  const raw = String(value || (fallback ? (String(fallback).startsWith('AWL-') ? fallback : fallback.slice(0, 8)) : '')).trim();
+  if (!raw) return 'AWL';
+  const cleaned = raw.replace(/^(awl[-_:\s]*)+/i, '');
+  return cleaned ? `AWL-${cleaned}` : raw;
 }
 
 function escapeHtml(value) {

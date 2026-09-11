@@ -1,22 +1,22 @@
 :root {
-  color-scheme: light;
-  --bg-cream: #faf7ee;
-  --panel-white: #ffffff;
-  --border-dark: 2px solid #1e293b;
-  --border-light: 1px solid #cbd5e1;
-  --shadow-offset: 3px 3px 0 #1e293b;
-  --text-main: #0f172a;
-  --text-muted: #64748b;
-  --pill-yellow-bg: #fef3c7;
-  --pill-yellow-txt: #78350f;
-  --pill-blue-bg: #dbeafe;
-  --pill-blue-txt: #1e40af;
-  --pill-green-bg: #d1fae5;
-  --pill-green-txt: #065f46;
-  --pill-red-bg: #fee2e2;
-  --pill-red-txt: #991b1b;
-  --pill-gray-bg: #f1f5f9;
-  --pill-gray-txt: #475569;
+  color-scheme: dark;
+  --bg-cream: #0f172a;
+  --panel-white: #1e293b;
+  --border-dark: 2px solid #334155;
+  --border-light: 1px solid #475569;
+  --shadow-offset: 3px 3px 0 #000000;
+  --text-main: #f8fafc;
+  --text-muted: #94a3b8;
+  --pill-yellow-bg: #422006;
+  --pill-yellow-txt: #fde68a;
+  --pill-blue-bg: #172554;
+  --pill-blue-txt: #bfdbfe;
+  --pill-green-bg: #022c22;
+  --pill-green-txt: #a7f3d0;
+  --pill-red-bg: #450a0a;
+  --pill-red-txt: #fecaca;
+  --pill-gray-bg: #334155;
+  --pill-gray-txt: #cbd5e1;
   --accent-orange: #ea580c;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
@@ -33,7 +33,8 @@ body {
   margin: 0;
   color: var(--text-main);
   background-color: var(--bg-cream);
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   font-size: 14px;
   line-height: 1.5;
 }
@@ -41,10 +42,12 @@ body {
 .app-container {
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
-  padding: 16px 24px 32px;
-  gap: 16px;
-  max-width: 1440px;
+  height: 100vh;
+  max-height: 100vh;
+  overflow: hidden;
+  padding: 14px 20px;
+  gap: 12px;
+  max-width: 1600px;
   margin: 0 auto;
 }
 
@@ -80,8 +83,8 @@ body {
   justify-content: center;
   width: 36px;
   height: 36px;
-  background: #000;
-  color: #fff;
+  background: #f8fafc;
+  color: #0f172a;
   font-weight: 800;
   border-radius: 50%;
   font-size: 14px;
@@ -106,9 +109,9 @@ body {
 .master-nav {
   display: flex;
   gap: 6px;
-  background: #f8fafc;
+  background: #0f172a;
   padding: 4px;
-  border: 1px solid #e2e8f0;
+  border: 1px solid #334155;
   border-radius: 6px;
 }
 
@@ -130,8 +133,8 @@ body {
 
 .nav-tab.active {
   background: var(--accent-orange);
-  color: #ffffff;
-  box-shadow: 1px 1px 0 #000;
+  color: #f8fafc;
+  box-shadow: 1px 1px 0 #000000;
 }
 
 .header-right {
@@ -147,7 +150,7 @@ body {
   border-radius: 6px;
   font-weight: 700;
   font-size: 12px;
-  box-shadow: 1px 1px 0 #1e293b;
+  box-shadow: 1px 1px 0 #000000;
 }
 
 .telemetry-pill.yellow { background: var(--pill-yellow-bg); color: var(--pill-yellow-txt); }
@@ -157,7 +160,7 @@ body {
   width: 32px;
   height: 32px;
   border: var(--border-dark);
-  background: #ffffff;
+  background: var(--panel-white);
   border-radius: 6px;
   cursor: pointer;
   font-weight: bold;
@@ -165,9 +168,9 @@ body {
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 1px 1px 0 #1e293b;
+  box-shadow: 1px 1px 0 #000000;
 }
-.icon-button:hover { background: #f1f5f9; }
+.icon-button:hover { background: #334155; }
 
 .operator-badge {
   display: flex;
@@ -176,15 +179,15 @@ body {
   padding: 4px 10px;
   border: var(--border-dark);
   border-radius: 6px;
-  background: #ffffff;
+  background: var(--panel-white);
   font-weight: 700;
   font-size: 12px;
-  box-shadow: 1px 1px 0 #1e293b;
+  box-shadow: 1px 1px 0 #000000;
 }
 
 .op-tag {
-  background: #fee2e2;
-  color: #991b1b;
+  background: #450a0a;
+  color: #fecaca;
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 10px;
@@ -225,9 +228,9 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   border-radius: 6px;
   padding: 6px 10px;
   font-size: 13px;
-  background: #ffffff;
+  background: var(--panel-white);
   color: var(--text-main);
-  box-shadow: 1px 1px 0 #1e293b;
+  box-shadow: 1px 1px 0 #000000;
 }
 
 .status-summary {
@@ -241,13 +244,15 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   display: flex;
   gap: 16px;
   flex: 1;
-  min-height: calc(100vh - 160px);
+  min-height: 0;
+  overflow: hidden;
 }
 
 /* Directory Sidebar */
 .sidebar-panel {
   width: 330px;
   flex-shrink: 0;
+  height: 100%;
   background: var(--panel-white);
   border: var(--border-dark);
   border-radius: 8px;
@@ -256,6 +261,7 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   flex-direction: column;
   padding: 14px;
   gap: 12px;
+  overflow: hidden;
 }
 
 .sidebar-header {
@@ -272,8 +278,8 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
 }
 
 .count-badge {
-  background: #f1f5f9;
-  border: 1px solid #cbd5e1;
+  background: #334155;
+  border: var(--border-light);
   padding: 2px 8px;
   border-radius: 4px;
   font-weight: 700;
@@ -289,16 +295,17 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   flex-direction: column;
   gap: 10px;
   overflow-y: auto;
-  max-height: calc(100vh - 270px);
+  flex: 1;
+  min-height: 0;
 }
 
 .candidate-card {
   border: var(--border-dark);
   border-radius: 8px;
   padding: 12px;
-  background: #ffffff;
+  background: var(--panel-white);
   cursor: pointer;
-  box-shadow: 2px 2px 0 #1e293b;
+  box-shadow: 2px 2px 0 #000000;
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -306,14 +313,14 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
 }
 
 .candidate-card:hover {
-  background: #fffbeb;
+  background: #334155;
   transform: translateY(-1px);
 }
 
 .candidate-card.active {
-  background: #fef3c7;
+  background: #422006;
   border-width: 2px;
-  box-shadow: 3px 3px 0 #000;
+  box-shadow: 3px 3px 0 #000000;
 }
 
 .card-top {
@@ -331,9 +338,9 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
 .avatar {
   width: 28px;
   height: 28px;
-  border: 1px solid #000;
+  border: 1px solid #94a3b8;
   border-radius: 50%;
-  background: #e2e8f0;
+  background: #475569;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -342,12 +349,12 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
 }
 
 .awl-pill {
-  border: 1px solid #64748b;
+  border: 1px solid #475569;
   padding: 2px 6px;
   border-radius: 4px;
   font-size: 10px;
   font-weight: 700;
-  background: #f8fafc;
+  background: #0f172a;
 }
 
 .status-badge {
@@ -358,8 +365,9 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   border: 1px solid transparent;
 }
 
-.status-badge.active { background: var(--pill-green-bg); color: var(--pill-green-txt); border-color: #10b981; }
+.status-badge.active { background: var(--pill-green-bg); color: var(--pill-green-txt); border-color: #059669; }
 .status-badge.idle { background: var(--pill-gray-bg); color: var(--pill-gray-txt); border-color: #cbd5e1; }
+.status-badge.pending { background: #422006; color: #fde68a; border-color: #d97706; }
 
 .cand-name {
   font-weight: 700;
@@ -382,18 +390,21 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
 }
 
 .jobs-count-pill {
-  border: 1px solid #000;
+  border: 1px solid #94a3b8;
   padding: 1px 6px;
   border-radius: 4px;
   font-weight: 700;
-  background: #ffffff;
-  color: #000;
+  background: var(--panel-white);
+  color: #f8fafc;
   font-size: 10px;
 }
 
 /* Workspace Right Panel */
 .workspace-panel {
   flex: 1;
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
   background: var(--panel-white);
   border: var(--border-dark);
   border-radius: 8px;
@@ -401,6 +412,15 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   padding: 16px;
   display: flex;
   flex-direction: column;
+}
+
+#stats-view-container {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
 .empty-state {
@@ -428,23 +448,23 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
 .workspace-subnav {
   display: flex;
   gap: 8px;
-  border-bottom: 2px solid #e2e8f0;
+  border-bottom: 2px solid #334155;
   padding-bottom: 8px;
 }
 
 .subnav-tab {
   border: var(--border-dark);
-  background: #ffffff;
+  background: var(--panel-white);
   padding: 6px 18px;
   font-weight: 700;
   font-size: 13px;
   cursor: pointer;
   border-radius: 6px;
-  box-shadow: 2px 2px 0 #1e293b;
+  box-shadow: 2px 2px 0 #000000;
 }
 
 .subnav-tab.active {
-  background: #fef3c7;
+  background: #422006;
 }
 
 .subtab-content {
@@ -457,8 +477,8 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   border: var(--border-dark);
   border-radius: 8px;
   padding: 14px;
-  background: #ffffff;
-  box-shadow: 2px 2px 0 #1e293b;
+  background: var(--panel-white);
+  box-shadow: 2px 2px 0 #000000;
 }
 
 .panel-card h4 {
@@ -479,16 +499,16 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   border-radius: 6px;
   padding: 10px;
   min-width: 220px;
-  background: #ffffff;
+  background: var(--panel-white);
   cursor: pointer;
-  box-shadow: 1px 1px 0 #1e293b;
+  box-shadow: 1px 1px 0 #000000;
   display: flex;
   flex-direction: column;
   gap: 4px;
 }
 
 .job-item-card.selected {
-  background: #dbeafe;
+  background: #172554;
   box-shadow: 2px 2px 0 #000;
 }
 
@@ -511,7 +531,7 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   font-weight: 700;
   padding: 3px 8px;
   border-radius: 4px;
-  border: 1px solid #000;
+  border: 1px solid #94a3b8;
 }
 
 .badge-pill.yellow { background: var(--pill-yellow-bg); color: var(--pill-yellow-txt); }
@@ -529,7 +549,7 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   border: var(--border-dark);
   border-radius: 6px;
   padding: 10px;
-  background: #f8fafc;
+  background: #0f172a;
   display: flex;
   flex-direction: column;
 }
@@ -559,7 +579,7 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   border: var(--border-dark);
   border-radius: 8px;
   padding: 16px;
-  box-shadow: 3px 3px 0 #1e293b;
+  box-shadow: 3px 3px 0 #000000;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -596,18 +616,18 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
 }
 
 .data-table th, .data-table td {
-  border: 1px solid #cbd5e1;
+  border: var(--border-light);
   padding: 8px 12px;
   text-align: left;
 }
 
 .data-table th {
-  background: #f1f5f9;
+  background: #334155;
   font-weight: 700;
 }
 
 .data-table tr:nth-child(even) {
-  background: #f8fafc;
+  background: #0f172a;
 }
 
 /* Buttons */
@@ -615,16 +635,16 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   border: var(--border-dark);
   border-radius: 6px;
   background: var(--accent-orange);
-  color: #ffffff;
+  color: #f8fafc;
   cursor: pointer;
   padding: 8px 16px;
   font-weight: 700;
   font-size: 13px;
-  box-shadow: 2px 2px 0 #1e293b;
+  box-shadow: 2px 2px 0 #000000;
 }
 
 .button:hover { background: #c2410c; }
-.button.secondary { background: #ffffff; color: var(--text-main); }
+.button.secondary { background: var(--panel-white); color: var(--text-main); }
 .button.small { padding: 4px 10px; font-size: 12px; }
 
 .login-panel {
@@ -649,19 +669,19 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
 /* Navigation Action Buttons (Copy Link & Show QR) */
 .nav-action-btn {
   border: var(--border-dark);
-  background: #ffffff;
+  background: var(--panel-white);
   padding: 6px 14px;
   font-weight: 700;
   font-size: 12px;
   cursor: pointer;
   border-radius: 4px;
   color: var(--text-main);
-  box-shadow: 1px 1px 0 #1e293b;
+  box-shadow: 1px 1px 0 #000000;
   transition: all 0.15s ease;
 }
 
 .nav-action-btn:hover {
-  background: #fef3c7;
+  background: #422006;
 }
 
 /* Modal Overlay Styling */
@@ -683,7 +703,7 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   left: 0;
   width: 100%;
   height: 100%;
-  background: rgba(15, 23, 42, 0.6);
+  background: rgba(0, 0, 0, 0.8);
   backdrop-filter: blur(2px);
 }
 
@@ -712,7 +732,7 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   display: flex;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 2px solid #e2e8f0;
+  border-bottom: 2px solid #334155;
   padding-bottom: 10px;
 }
 
@@ -724,14 +744,14 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
 
 .modal-close-btn {
   border: var(--border-dark);
-  background: #fee2e2;
-  color: #991b1b;
+  background: #450a0a;
+  color: #fecaca;
   padding: 5px 12px;
   font-size: 12px;
   font-weight: 800;
   border-radius: 6px;
   cursor: pointer;
-  box-shadow: 1px 1px 0 #000;
+  box-shadow: 1px 1px 0 #000000;
 }
 
 .modal-close-btn:hover {
@@ -750,6 +770,6 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   object-fit: contain;
   border: var(--border-dark);
   border-radius: 8px;
-  box-shadow: 3px 3px 0 #1e293b;
-  background: #ffffff;
+  box-shadow: 3px 3px 0 #000000;
+  background: var(--panel-white);
 }

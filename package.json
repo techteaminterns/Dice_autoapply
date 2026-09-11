@@ -3,6 +3,7 @@
     "create-operator": "node scripts/create-operator.js",
     "import-operators": "node scripts/import-operators.js",
     "import-clients": "node scripts/import-clients.js",
+    "sync-daily": "node scripts/sync-daily-pipeline.js",
     "start": "node index.js",
     "test": "node --test test/*.test.js",
     "verify-client": "node scripts/verify-client-lookup.js",
@@ -10,7 +11,6 @@
   },
   "dependencies": {
     "@browserbasehq/sdk": "^2.19.0",
-    "@sendgrid/mail": "^8.1.6",
     "bcryptjs": "^3.0.3",
     "dotenv": "^17.4.2",
     "node-telegram-bot-api": "^2.1.0",
