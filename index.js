@@ -5,7 +5,7 @@ const { Bot } = require('node-telegram-bot-api');
 const { createPool, createServiceClient } = require('./lib/azure');
 const { createDashboardServer } = require('./lib/dashboard-server');
 const { fillCurrentStep, isVisibleEnabled, loadApplyProfile } = require('./lib/dice-apply-questions');
-const { openBrowser, closeBrowser, useBrowserbase, maxConcurrent } = require('./lib/browser');
+const { openBrowser, closeBrowser, closeSharedBrowser, useBrowserbase, maxConcurrent } = require('./lib/browser');
 const { createApplyQueue } = require('./lib/apply-queue');
 const { startApplyWorkers } = require('./lib/apply-worker');
 const { createWorkflowStateStore } = require('./lib/workflow-state');
@@ -23,7 +23,8 @@ if (!dicePassword) {
 }
 
 const azure = createServiceClient();
-const dashboardServer = createDashboardServer({ db: createPool() });
+const pool = createPool();
+const dashboardServer = createDashboardServer({ db: pool });
 const applyQueue = createApplyQueue(azure);
 const workflowStateStore = createWorkflowStateStore(azure);
 let applyWorkerController = null;
@@ -49,6 +50,7 @@ function stateFor(chatId) {
       jobRunnerActive: false,
       browser: null,
       decisionResolver: null,
+      pendingQuestion: null,
       pendingJobUrl: {}, // Store URL by hash for button callbacks
       completionNotified: false,
       knownJobUrls: new Set(),
@@ -692,6 +694,42 @@ async function applyToJobOnPage(page, jobName, url, chatId) {
     hasOffice: applyProfile.can_work_3_days_in_office ?? null,
   });
 
+  function createTelegramQuestionPrompt(targetChatId, currentJobName) {
+    return async function onPromptFallback({ question, options = [], type = 'text' }) {
+      const state = stateFor(targetChatId);
+      let msg = `❓ Application Question Needed\nJob: ${currentJobName}\n\nQuestion: ${question}`;
+      if (options && options.length) {
+        msg += '\n\nOptions:';
+        options.forEach((opt, idx) => {
+          msg += `\n${idx + 1}. ${opt}`;
+        });
+      }
+      msg += `\n\n⏳ Please reply with your answer (or reply 'skip' to skip this job) within 15 minutes.`;
+
+      await sendMessage(targetChatId, msg);
+
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          if (state.pendingQuestion === pending) {
+            state.pendingQuestion = null;
+          }
+          sendMessage(targetChatId, "you didn't give response, job missed.");
+          reject(new Error("You didn't give response, job missed."));
+        }, 15 * 60 * 1000);
+
+        const pending = {
+          resolve,
+          reject,
+          timer,
+          options,
+          question,
+        };
+
+        state.pendingQuestion = pending;
+      });
+    };
+  }
+
   while (true) {
     if (applicationPage.url().includes('/login')) throw sessionExpiredError();
 
@@ -718,8 +756,17 @@ async function applyToJobOnPage(page, jobName, url, chatId) {
     }
 
     if (nextVisible) {
-      const filled = await fillCurrentStep(applicationPage, applyProfile);
+      const onPromptFallback = createTelegramQuestionPrompt(chatId, jobName);
+      const filled = await fillCurrentStep(applicationPage, applyProfile, {
+        dbPool: pool,
+        onPromptFallback,
+      });
       if (!filled.ok) {
+        if (filled.reason === 'SKIPPED_BY_USER' || filled.reason?.includes("didn't give response")) {
+          console.log(`[User ${chatId}] Job skipped: ${filled.reason}`);
+          await saveAppliedJob(chatId, url, jobName, 'skipped');
+          return false;
+        }
         console.warn(`[User ${chatId}] Skipped ${jobName}: ${filled.reason || 'Could not answer an application question.'}`);
         await saveAppliedJob(chatId, url, jobName, 'external_or_failed');
         sendMessage(chatId, 'application failed, reviewing.');
@@ -1354,6 +1401,40 @@ bot.on('message', (ctx) => {
   const chatId = ctx.message?.chat.id;
   if (!chatId || (allowedChatId && chatId !== allowedChatId) || typeof ctx.message.text !== 'string') return;
 
+  const text = ctx.message.text.trim();
+  const state = stateFor(chatId);
+
+  // Check if candidate is responding to an application question prompt
+  if (state.pendingQuestion) {
+    const pending = state.pendingQuestion;
+    if (/^(\/)?skip$/i.test(text)) {
+      clearTimeout(pending.timer);
+      state.pendingQuestion = null;
+      sendMessage(chatId, 'Application skipped as requested.');
+      pending.reject(new Error('SKIPPED_BY_USER'));
+      return;
+    }
+
+    let selectedAnswer = text;
+    if (pending.options && pending.options.length) {
+      const num = parseInt(text, 10);
+      if (!Number.isNaN(num) && num >= 1 && num <= pending.options.length) {
+        selectedAnswer = pending.options[num - 1];
+      } else {
+        const lowerText = text.toLowerCase();
+        const matched = pending.options.find((opt) => opt.toLowerCase() === lowerText)
+          || pending.options.find((opt) => opt.toLowerCase().includes(lowerText));
+        if (matched) selectedAnswer = matched;
+      }
+    }
+
+    clearTimeout(pending.timer);
+    state.pendingQuestion = null;
+    sendMessage(chatId, 'response noted-question answered.');
+    pending.resolve(selectedAnswer);
+    return;
+  }
+
   handleCommand(chatId, ctx.message.text).catch(async (error) => {
     stateFor(chatId).conversation = null;
     console.error(`Command failed: ${error.message}`);
@@ -1472,12 +1553,18 @@ bot.on('callback_query', async (ctx) => {
 async function shutdown() {
   if (applyWorkerController) applyWorkerController.stop();
   for (const state of userStates.values()) {
+    if (state.pendingQuestion) {
+      clearTimeout(state.pendingQuestion.timer);
+      state.pendingQuestion.reject(new Error('Controller stopped.'));
+      state.pendingQuestion = null;
+    }
     if (state.conversation) state.conversation.reject(new Error('Controller stopped.'));
     if (state.decisionResolver) state.decisionResolver(false);
     if (state.browser) await state.browser.close().catch(() => { });
     state.jobRunnerActive = false;
   }
   if (bot.isRunning()) await bot.stopPolling().catch(() => { });
+  await closeSharedBrowser().catch(() => { });
   await new Promise((resolve) => dashboardServer.close(resolve));
 }
 

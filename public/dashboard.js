@@ -310,6 +310,11 @@ function render() {
   }
   document.querySelector('#operator-name').textContent = state.operatorName || 'Operator';
 
+  const devLink = document.querySelector('#dev-portal-link');
+  if (devLink) {
+    devLink.style.display = state.operatorRole === 'admin' ? 'inline-flex' : 'none';
+  }
+
   updateMasterTabUI();
   renderCandidateDirectory();
   renderCandidateWorkspace();

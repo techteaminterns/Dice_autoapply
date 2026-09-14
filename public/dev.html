@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Developer Observability Portal | Dice Scaling</title>
+  <link rel="stylesheet" href="/dev.css">
+  <link rel="icon" type="image/png" href="/BotDice.png">
+</head>
+<body>
+  <div class="dev-app">
+    <!-- Top Header -->
+    <header class="dev-header">
+      <div class="dev-header-left">
+        <div class="dev-brand">
+          <div class="dev-brand-badge">DEV</div>
+          <div class="dev-brand-info">
+            <h1>Dice Scaling Telemetry</h1>
+            <span>Real-time System Observability & Automation Stream</span>
+          </div>
+        </div>
+        <a href="/dashboard" class="dev-nav-link">← Standard Dashboard</a>
+      </div>
+
+      <div class="dev-header-right">
+        <div class="stream-status" id="stream-status">
+          <span class="status-dot"></span>
+          <span class="status-label">SSE Stream Connecting...</span>
+        </div>
+        <button id="stream-toggle-btn" class="dev-btn dev-btn-sm dev-btn-outline">⏸ Pause Stream</button>
+        <button id="refresh-dev-btn" class="dev-btn dev-btn-sm dev-btn-primary">↻ Refresh</button>
+        <div class="dev-operator-pill" id="dev-operator-pill">
+          <span class="role-badge">ADMIN</span>
+          <span id="dev-operator-name">Loading...</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Top KPI Telemetry Cards -->
+    <section class="kpi-grid">
+      <div class="kpi-card accent-blue">
+        <div class="kpi-label">Total Candidates</div>
+        <div class="kpi-val" id="kpi-total-candidates">—</div>
+        <div class="kpi-sub" id="kpi-linked-candidates">— linked to Telegram</div>
+      </div>
+      <div class="kpi-card accent-green">
+        <div class="kpi-label">Active 9-Hour Sessions</div>
+        <div class="kpi-val" id="kpi-active-sessions">—</div>
+        <div class="kpi-sub">Currently scanning for jobs</div>
+      </div>
+      <div class="kpi-card accent-purple">
+        <div class="kpi-label">Applications Today</div>
+        <div class="kpi-val" id="kpi-applied-today">—</div>
+        <div class="kpi-sub">Submitted to Dice.com</div>
+      </div>
+      <div class="kpi-card accent-amber">
+        <div class="kpi-label">Queue Backlog</div>
+        <div class="kpi-val" id="kpi-queue-active">—</div>
+        <div class="kpi-sub" id="kpi-queue-breakdown">0 running • 0 queued</div>
+      </div>
+      <div class="kpi-card accent-red">
+        <div class="kpi-label">Application Errors</div>
+        <div class="kpi-val" id="kpi-errors-count">—</div>
+        <div class="kpi-sub">Failed applications / skips</div>
+      </div>
+      <div class="kpi-card accent-cyan">
+        <div class="kpi-label">System Health</div>
+        <div class="kpi-val" id="kpi-uptime">—</div>
+        <div class="kpi-sub" id="kpi-memory">RAM: — MB • Node: —</div>
+      </div>
+    </section>
+
+    <!-- Navigation Tabs -->
+    <nav class="dev-tabs">
+      <button class="dev-tab active" data-target="tab-stream">📡 Live Event Stream <span class="tab-count" id="tab-count-events">0</span></button>
+      <button class="dev-tab" data-target="tab-queue">⚙️ Apply Queue & Workers <span class="tab-count" id="tab-count-queue">0</span></button>
+      <button class="dev-tab" data-target="tab-matrix">👥 Candidate Session Matrix <span class="tab-count" id="tab-count-sessions">0</span></button>
+      <button class="dev-tab" data-target="tab-errors">❌ Error Diagnostics <span class="tab-count" id="tab-count-errors">0</span></button>
+      <button class="dev-tab" data-target="tab-system">🏥 System Infrastructure</button>
+    </nav>
+
+    <!-- Main Workspace Views -->
+    <main class="dev-main">
+      <!-- 1. LIVE EVENT STREAM TAB -->
+      <section class="dev-view active" id="tab-stream">
+        <div class="view-toolbar">
+          <div class="search-wrap">
+            <input type="search" id="stream-search" placeholder="Filter by event (e.g. prompt, yes, error), candidate email, or chat ID..." />
+          </div>
+          <div class="filter-group">
+            <select id="stream-event-filter">
+              <option value="all">All Event Types</option>
+              <option value="job_prompt_sent">Job Prompt Sent</option>
+              <option value="job_yes">Prompt Accepted (Yes)</option>
+              <option value="job_no">Prompt Rejected (No)</option>
+              <option value="job_missed">Prompt Missed (Timeout)</option>
+              <option value="job_queued">Job Queued</option>
+              <option value="automation_delay_started">Automation Delay</option>
+              <option value="dice_login_started">Dice Login</option>
+              <option value="next_link_scheduled">Next Scan Scheduled</option>
+            </select>
+            <button id="clear-stream-btn" class="dev-btn dev-btn-sm dev-btn-outline">Clear View</button>
+            <label class="autoscroll-toggle">
+              <input type="checkbox" id="autoscroll-chk" checked /> Auto-scroll
+            </label>
+          </div>
+        </div>
+
+        <div class="stream-log-container" id="stream-log-container">
+          <div class="stream-empty-msg">Listening for real-time audit events and workflow updates...</div>
+        </div>
+      </section>
+
+      <!-- 2. APPLY QUEUE & WORKERS TAB -->
+      <section class="dev-view" id="tab-queue">
+        <div class="view-toolbar">
+          <div class="toolbar-title">Active Queue & Automation Pipeline</div>
+          <div class="search-wrap">
+            <input type="search" id="queue-search" placeholder="Search queue by candidate, URL, or status..." />
+          </div>
+        </div>
+
+        <div class="queue-grid-layout">
+          <!-- Worker Summary -->
+          <div class="worker-summary-panel">
+            <h3>Worker Slots & Concurrency</h3>
+            <div class="worker-card-grid" id="workers-card-grid">
+              <!-- Dynamically rendered worker cards -->
+            </div>
+          </div>
+
+          <!-- Queue Table -->
+          <div class="queue-table-panel">
+            <h3>Durable Application Queue (<code>dice_apply_queue</code>)</h3>
+            <div class="table-responsive">
+              <table class="dev-table" id="queue-table">
+                <thead>
+                  <tr>
+                    <th>Status</th>
+                    <th>Candidate</th>
+                    <th>Job Link</th>
+                    <th>Available At (Delay)</th>
+                    <th>Worker ID</th>
+                    <th>Attempts</th>
+                    <th>Last Error</th>
+                  </tr>
+                </thead>
+                <tbody id="queue-table-body">
+                  <tr><td colspan="7" class="text-center text-muted">No items in queue.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 3. CANDIDATE SESSION MATRIX TAB -->
+      <section class="dev-view" id="tab-matrix">
+        <div class="view-toolbar">
+          <div class="toolbar-title">Live Candidate 9-Hour Workflows (<code>dice_workflow_sessions</code>)</div>
+          <div class="search-wrap">
+            <input type="search" id="matrix-search" placeholder="Search candidates..." />
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="dev-table" id="sessions-table">
+            <thead>
+              <tr>
+                <th>Candidate</th>
+                <th>Telegram Chat</th>
+                <th>Assigned CA</th>
+                <th>9-Hour Session Timer</th>
+                <th>Consecutive 'No'</th>
+                <th>Next Scan Schedule</th>
+                <th>Last Decision</th>
+                <th>Current Prompt</th>
+              </tr>
+            </thead>
+            <tbody id="sessions-table-body">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 4. ERROR DIAGNOSTICS TAB -->
+      <section class="dev-view" id="tab-errors">
+        <div class="view-toolbar">
+          <div class="toolbar-title">Failure Log & Error Diagnostics (<code>dice_applied_jobs</code>)</div>
+          <div class="search-wrap">
+            <input type="search" id="errors-search" placeholder="Search error reasons, candidate, or job title..." />
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="dev-table" id="errors-table">
+            <thead>
+              <tr>
+                <th>Timestamp</th>
+                <th>Candidate</th>
+                <th>Job Title / Company</th>
+                <th>Status / Reason</th>
+                <th>Target URL</th>
+              </tr>
+            </thead>
+            <tbody id="errors-table-body">
+              <!-- Dynamically populated -->
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- 5. SYSTEM INFRASTRUCTURE TAB -->
+      <section class="dev-view" id="tab-system">
+        <div class="system-grid">
+          <div class="system-card">
+            <h3>Runtime Environment</h3>
+            <table class="keyval-table">
+              <tr><td>Node Version</td><td id="sys-node-ver">—</td></tr>
+              <tr><td>Platform / OS</td><td id="sys-platform">—</td></tr>
+              <tr><td>Process Uptime</td><td id="sys-uptime-long">—</td></tr>
+              <tr><td>Browser Engine</td><td id="sys-browser-mode">—</td></tr>
+              <tr><td>Max Concurrency</td><td id="sys-max-concurrency">—</td></tr>
+            </table>
+          </div>
+
+          <div class="system-card">
+            <h3>Process Memory Usage</h3>
+            <table class="keyval-table">
+              <tr><td>RSS Memory</td><td id="sys-mem-rss">—</td></tr>
+              <tr><td>Heap Used</td><td id="sys-mem-heap-used">—</td></tr>
+              <tr><td>Heap Total</td><td id="sys-mem-heap-total">—</td></tr>
+            </table>
+          </div>
+
+          <div class="system-card">
+            <h3>Operator & CA Accounts</h3>
+            <div class="table-responsive">
+              <table class="dev-table compact" id="cas-table">
+                <thead>
+                  <tr>
+                    <th>Name</th>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Status</th>
+                  </tr>
+                </thead>
+                <tbody id="cas-table-body">
+                  <!-- Dynamically populated -->
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Detail Modal for Raw JSON Inspector -->
+  <div class="dev-modal" id="details-modal" hidden>
+    <div class="dev-modal-backdrop" id="modal-backdrop"></div>
+    <div class="dev-modal-box">
+      <div class="dev-modal-header">
+        <h3 id="modal-title">Event Inspection Details</h3>
+        <button class="dev-modal-close" id="modal-close-btn">&times;</button>
+      </div>
+      <div class="dev-modal-body">
+        <pre id="modal-json-content"></pre>
+      </div>
+    </div>
+  </div>
+
+  <script src="/dev.js"></script>
+</body>
+</html>
