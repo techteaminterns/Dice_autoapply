@@ -77,6 +77,14 @@ body {
   gap: 10px;
 }
 
+.brand-logo-img {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  object-fit: cover;
+  border: var(--border-light);
+}
+
 .brand-logo {
   display: flex;
   align-items: center;
@@ -772,4 +780,25 @@ input[type="date"], select, input[type="search"], input[type="email"], input[typ
   border-radius: 8px;
   box-shadow: 3px 3px 0 #000000;
   background: var(--panel-white);
+}
+
+/* CA Sidebar Header */
+.ca-sidebar-header {
+  position: sticky;
+  top: 0;
+  background: var(--bg-cream);
+  padding: 6px 12px;
+  font-weight: 700;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-radius: 4px;
+  border: var(--border-light);
+  z-index: 10;
+  margin-top: 10px;
+  margin-bottom: 2px;
+}
+.ca-sidebar-header:first-child {
+  margin-top: 0;
 }

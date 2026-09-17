@@ -34,11 +34,6 @@ const LINK_CUTOFF_MS = (8 * 60 + 32) * 60 * 1000;
 const DECISION_TIMEOUT_MS = 15 * 60 * 1000;
 const NEXT_LINK_DELAY_MS = 28 * 60 * 1000;
 const NEWDAY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
-
-if (!botToken) {
-  throw new Error('BOT_TOKEN must be set in the environment.');
-}
-
 const bot = new Bot(botToken);
 const userStates = new Map();
 
@@ -104,6 +99,7 @@ function waitForDecision(chatId, timeoutMs = DECISION_TIMEOUT_MS) {
       if (state.decisionTimer) clearTimeout(state.decisionTimer);
       state.decisionTimer = null;
       state.decisionResolver = null;
+      state.currentPromptToken = null;
       resolve(result);
     };
 
@@ -485,18 +481,18 @@ async function refreshLogin(chatId) {
 }
 
 // === JOBS & APPLICATIONS ===
-async function readJobUrls(clientId, applywizzId, scrapedAfter = null) {
+async function readJobUrls(clientId, applywizzId, scrapedAfter = Date.now() - NEWDAY_LOOKBACK_MS) {
   if (!applywizzId || !clientId) return [];
 
   const pool = createPool();
-  const scrapedAfterIso = scrapedAfter ? new Date(scrapedAfter).toISOString() : null;
+  const scrapedAfterIso = new Date(scrapedAfter || (Date.now() - NEWDAY_LOOKBACK_MS)).toISOString();
 
   try {
     const result = await pool.query(
       `SELECT j.id, j.url, j.title, j.company, j.applywizz_id, j.company_email, j.scraped_at
        FROM dice_scraped_jobs j
        WHERE j.applywizz_id = $1
-         AND ($2::timestamptz IS NULL OR j.scraped_at >= $2::timestamptz)
+         AND j.scraped_at >= $2::timestamptz
          AND NOT EXISTS (
            SELECT 1 FROM dice_applied_jobs a
            WHERE a.client_id = $3 AND a.url = j.url
@@ -505,7 +501,8 @@ async function readJobUrls(clientId, applywizzId, scrapedAfter = null) {
            SELECT 1 FROM dice_apply_queue q
            WHERE q.client_id = $3 AND q.url = j.url
          )
-       ORDER BY j.scraped_at DESC`,
+       ORDER BY j.scraped_at DESC
+       LIMIT 50`,
       [applywizzId, scrapedAfterIso, clientId]
     );
 
@@ -524,7 +521,7 @@ async function readJobUrls(clientId, applywizzId, scrapedAfter = null) {
   }
 }
 
-async function saveAppliedJob(chatId, url, jobName, status) {
+async function saveAppliedJob(chatId, url, jobName, status, reason = null) {
   const clientId = await getClientIdForChat(chatId);
   if (!clientId) {
     console.error(`[User ${chatId}] Cannot save application: no linked client.`);
@@ -540,6 +537,7 @@ async function saveAppliedJob(chatId, url, jobName, status) {
       url,
       job_name: jobName || 'Unknown Job',
       status,
+      reason,
       applied_at: new Date().toISOString(),
     },
     { onConflict: 'client_id,url' }
@@ -549,7 +547,7 @@ async function saveAppliedJob(chatId, url, jobName, status) {
     console.error(`[User ${chatId}] Failed to save application:`, error.message);
     return;
   }
-  console.log(`[User ${chatId}] Saved job decision: ${status} for ${url}`);
+  console.log(`[User ${chatId}] Saved job decision: ${status}${reason ? ` (${reason})` : ''} for ${url}`);
 }
 
 async function hasHandledJob(chatId, url) {
@@ -682,7 +680,7 @@ async function applyToJobOnPage(page, jobName, url, chatId) {
 
   if (!applicationPage.url().includes('dice.com')) {
     console.warn(`[User ${chatId}] Skipped ${jobName}: Redirected to external site.`);
-    await saveAppliedJob(chatId, url, jobName, 'external');
+    await saveAppliedJob(chatId, url, jobName, 'failed', 'external_redirect');
     sendMessage(chatId, 'application failed, reviewing.');
     return false;
   }
@@ -743,7 +741,7 @@ async function applyToJobOnPage(page, jobName, url, chatId) {
       ]);
     } catch (e) {
       console.warn(`[User ${chatId}] Skipped ${jobName}: Missing Next/Submit (likely an extra question we could not fill).`);
-      await saveAppliedJob(chatId, url, jobName, 'external_or_failed');
+      await saveAppliedJob(chatId, url, jobName, 'failed', 'missing_next_or_submit');
       sendMessage(chatId, 'application failed, reviewing.');
       return false;
     }
@@ -764,18 +762,18 @@ async function applyToJobOnPage(page, jobName, url, chatId) {
       if (!filled.ok) {
         if (filled.reason === 'SKIPPED_BY_USER' || filled.reason?.includes("didn't give response")) {
           console.log(`[User ${chatId}] Job skipped: ${filled.reason}`);
-          await saveAppliedJob(chatId, url, jobName, 'skipped');
+          await saveAppliedJob(chatId, url, jobName, 'skipped', filled.reason);
           return false;
         }
         console.warn(`[User ${chatId}] Skipped ${jobName}: ${filled.reason || 'Could not answer an application question.'}`);
-        await saveAppliedJob(chatId, url, jobName, 'external_or_failed');
+        await saveAppliedJob(chatId, url, jobName, 'failed', filled.reason || 'unanswered_question');
         sendMessage(chatId, 'application failed, reviewing.');
         return false;
       }
 
       if (!await isVisibleEnabled(nextButton)) {
         console.warn(`[User ${chatId}] Skipped ${jobName}: Next stayed disabled after filling questions.`);
-        await saveAppliedJob(chatId, url, jobName, 'external_or_failed');
+        await saveAppliedJob(chatId, url, jobName, 'failed', 'next_button_disabled');
         sendMessage(chatId, 'application failed, reviewing.');
         return false;
       }
@@ -805,7 +803,7 @@ async function applyToJobOnPage(page, jobName, url, chatId) {
   }
 
   console.warn(`[User ${chatId}] Skipped ${jobName}: Could not complete application.`);
-  await saveAppliedJob(chatId, url, jobName, 'failed');
+  await saveAppliedJob(chatId, url, jobName, 'failed', 'submit_button_not_clickable');
   sendMessage(chatId, 'application failed, reviewing.');
   return false;
 }
@@ -863,7 +861,7 @@ async function executeQueuedApply(job) {
           retryAfterLogin = true;
         } else {
           console.error(`[User ${chatId}] Failed to apply to ${url}:`, error.message);
-          await saveAppliedJob(chatId, url, 'Failed', 'failed');
+          await saveAppliedJob(chatId, url, 'Failed', 'failed', error.message);
           sendMessage(chatId, 'application failed, reviewing.');
           throw error;
         }
@@ -887,6 +885,8 @@ async function runJobsLoop(chatId) {
   const runGeneration = state.runGeneration;
   state.jobRunnerActive = true;
   console.log(`[User ${chatId}] Job loop started.`);
+
+  let consecutiveEmptyPolls = 0;
 
   while (state.jobRunnerActive && state.runGeneration === runGeneration) {
     if (state.nextScanAt > Date.now()) {
@@ -921,7 +921,7 @@ async function runJobsLoop(chatId) {
         last_decision: 'missed',
         last_decision_at: new Date(missedAt).toISOString(),
       });
-      await saveAppliedJob(chatId, missedUrl, 'Job missed', 'missed');
+      await saveAppliedJob(chatId, missedUrl, 'Job missed', 'missed', 'timeout');
       await sendMessage(chatId, 'Job missed');
       continue;
     }
@@ -929,20 +929,21 @@ async function runJobsLoop(chatId) {
     const clientId = await getClientIdForChat(chatId);
     const applyProfile = clientId ? await loadApplyProfile(azure, clientId) : {};
 
-    const scrapedAfter = state.newdayRequestedAt
-      ? state.newdayRequestedAt - NEWDAY_LOOKBACK_MS
-      : null;
+    const scrapedAfter = (state.newdayRequestedAt || Date.now()) - NEWDAY_LOOKBACK_MS;
     const jobs = await readJobUrls(clientId, applyProfile.applywizz_id, scrapedAfter);
     const urls = jobs.map((job) => job.url);
     const hasNewUrl = urls.some((url) => !state.knownJobUrls.has(url));
     state.knownJobUrls = new Set(urls);
 
     if (state.completionNotified && !hasNewUrl) {
-      await new Promise((r) => setTimeout(r, 10000));
+      consecutiveEmptyPolls++;
+      const delayMs = Math.min(10000 * Math.pow(2, Math.max(0, consecutiveEmptyPolls - 1)), 300000);
+      await new Promise((r) => setTimeout(r, delayMs));
       continue;
     }
 
     if (hasNewUrl) {
+      consecutiveEmptyPolls = 0;
       state.completionNotified = false;
       console.log(`[User ${chatId}] New job URL detected; resuming scanner.`);
     }
@@ -950,7 +951,9 @@ async function runJobsLoop(chatId) {
     let offeredAny = false;
     let unhandledUrlFound = false;
 
-    console.log(`[User ${chatId}] Processing ${jobs.length} unhandled jobs. Profile AWL ID: '${applyProfile.applywizz_id}'`);
+    if (jobs.length > 0 || consecutiveEmptyPolls === 0) {
+      console.log(`[User ${chatId}] Processing ${jobs.length} unhandled jobs. Profile AWL ID: '${applyProfile.applywizz_id}'`);
+    }
     for (const job of jobs) {
       const { url } = job;
       if (!state.jobRunnerActive || state.runGeneration !== runGeneration) {
@@ -1000,7 +1003,7 @@ async function runJobsLoop(chatId) {
         const precheck = await prevalidateJob(chatId, job);
         if (!precheck.ok) {
           console.log(`[User ${chatId}] Pre-flight check failed for ${url}: ${precheck.reason}. Skipping silently.`);
-          await saveAppliedJob(chatId, url, precheck.jobName || job.title || 'Unknown Job', precheck.reason);
+          await saveAppliedJob(chatId, url, precheck.jobName || job.title || 'Unknown Job', 'failed', precheck.reason);
           continue;
         }
       }
@@ -1065,6 +1068,12 @@ async function runJobsLoop(chatId) {
       const response = await waitForDecision(chatId, decisionWaitMs);
       if (state.runGeneration !== runGeneration) break;
       const clickAt = response.clickedAt || Date.now();
+
+      state.currentPromptToken = null;
+      state.currentPromptUrl = null;
+      state.currentPromptSentAt = null;
+      state.currentPromptExpiresAt = null;
+
       await audit(chatId, response.decision === null ? 'job_missed' : response.decision ? 'job_yes' : 'job_no', {
         url,
         clickedAt: new Date(clickAt).toISOString(),
@@ -1077,13 +1086,9 @@ async function runJobsLoop(chatId) {
         last_decision: response.decision === null ? 'missed' : response.decision ? 'yes' : 'no',
         last_decision_at: new Date(clickAt).toISOString(),
       });
-      state.currentPromptToken = null;
-      state.currentPromptUrl = null;
-      state.currentPromptSentAt = null;
-      state.currentPromptExpiresAt = null;
 
       if (response.decision === null) {
-        await saveAppliedJob(chatId, url, 'Job missed', 'missed');
+        await saveAppliedJob(chatId, url, 'Job missed', 'missed', 'timeout');
         await sendMessage(chatId, 'Job missed');
         state.nextScanAt = Math.min(state.sessionDeadline, promptSentAt + DECISION_TIMEOUT_MS + NEXT_LINK_DELAY_MS);
         await persistWorkflowState(chatId, state);
@@ -1096,7 +1101,7 @@ async function runJobsLoop(chatId) {
       }
 
       if (!response.decision) {
-        await saveAppliedJob(chatId, url, 'Skipped by user', 'rejected');
+        await saveAppliedJob(chatId, url, 'Skipped by user', 'rejected', 'user_clicked_no');
         await sendMessage(chatId, 'response noted-no');
         state.consecutiveNoCount += 1;
         if (state.consecutiveNoCount >= 3) {
@@ -1198,7 +1203,13 @@ async function runJobsLoop(chatId) {
     }
 
     if (!offeredAny && state.jobRunnerActive) {
-      await new Promise((r) => setTimeout(r, 10000));
+      if (!state.completionNotified || hasNewUrl) {
+        consecutiveEmptyPolls++;
+      }
+      const delayMs = Math.min(10000 * Math.pow(2, Math.max(0, consecutiveEmptyPolls - 1)), 300000);
+      await new Promise((r) => setTimeout(r, delayMs));
+    } else if (offeredAny) {
+      consecutiveEmptyPolls = 0;
     }
   }
 

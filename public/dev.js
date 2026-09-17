@@ -9,6 +9,7 @@ const state = {
   filters: {
     streamSearch: '',
     streamEvent: 'all',
+    streamUser: 'all',
     queueSearch: '',
     matrixSearch: '',
     errorsSearch: '',
@@ -60,6 +61,16 @@ function initSearchFilters() {
     renderStreamLog();
   });
 
+  const userFilterEl = document.querySelector('#stream-user-filter');
+  if (userFilterEl) {
+    userFilterEl.addEventListener('change', async (e) => {
+      state.filters.streamUser = e.target.value;
+      renderStreamLog();
+      initEventSource();
+      await loadOverview(false, state.filters.streamUser);
+    });
+  }
+
   document.querySelector('#stream-event-filter').addEventListener('change', (e) => {
     state.filters.streamEvent = e.target.value;
     renderStreamLog();
@@ -102,10 +113,12 @@ function initSearchFilters() {
 }
 
 // Load Full Data Snapshot
-async function loadOverview(manual = false) {
+async function loadOverview(manual = false, specificChatId = null) {
   try {
     if (manual) refreshDevBtn.textContent = '↻ Loading...';
-    const response = await fetch('/api/dev/overview');
+    const targetChatId = specificChatId !== null ? specificChatId : (state.filters.streamUser !== 'all' ? state.filters.streamUser : null);
+    const url = targetChatId ? `/api/dev/overview?chatId=${encodeURIComponent(targetChatId)}` : '/api/dev/overview';
+    const response = await fetch(url);
     if (response.status === 401 || response.status === 403) {
       window.location.href = '/dashboard';
       return;
@@ -115,11 +128,14 @@ async function loadOverview(manual = false) {
     state.data = await response.json();
     if (!state.data.ok) throw new Error(state.data.error || 'Failed snapshot');
 
-    // Populate Initial Stream Events if empty
-    if (state.streamEvents.length === 0 && state.data.audit_logs) {
-      state.streamEvents = [...state.data.audit_logs];
+    // Populate Stream Events if empty OR if a specific user was requested
+    if (state.data.audit_logs) {
+      if (targetChatId || state.streamEvents.length === 0) {
+        state.streamEvents = [...state.data.audit_logs];
+      }
     }
 
+    populateUserDropdown();
     renderHeaderAndKPIs();
     renderStreamLog();
     renderQueueTable();
@@ -135,13 +151,23 @@ async function loadOverview(manual = false) {
 
 // Setup Server-Sent Events (SSE) Stream
 function initEventSource() {
-  if (state.eventSource) state.eventSource.close();
+  if (state.eventSource) {
+    state.eventSource.close();
+    state.eventSource = null;
+  }
 
-  state.eventSource = new EventSource('/api/dev/stream');
+  const isUserFiltered = state.filters.streamUser && state.filters.streamUser !== 'all';
+  const url = isUserFiltered
+    ? `/api/dev/stream?chatId=${encodeURIComponent(state.filters.streamUser)}`
+    : '/api/dev/stream';
+
+  state.eventSource = new EventSource(url);
 
   state.eventSource.onopen = () => {
     streamStatusEl.className = 'stream-status connected';
-    streamStatusLabel.textContent = 'SSE Stream Live';
+    streamStatusLabel.textContent = isUserFiltered
+      ? `SSE Live (User: ${state.filters.streamUser})`
+      : 'SSE Stream Live';
   };
 
   state.eventSource.addEventListener('audit_events', (e) => {
@@ -175,6 +201,71 @@ function initEventSource() {
     streamStatusEl.className = 'stream-status disconnected';
     streamStatusLabel.textContent = 'SSE Reconnecting...';
   };
+}
+
+// Populate User Dropdown
+function populateUserDropdown() {
+  const userFilterEl = document.querySelector('#stream-user-filter');
+  if (!userFilterEl || !state.data) return;
+
+  const currentVal = state.filters.streamUser || 'all';
+  const userMap = new Map();
+
+  if (Array.isArray(state.data.active_users)) {
+    state.data.active_users.forEach((u) => {
+      if (u.telegram_chat_id) {
+        userMap.set(String(u.telegram_chat_id), {
+          chatId: String(u.telegram_chat_id),
+          name: u.full_name || '',
+          email: u.company_email || '',
+          applywizzId: u.applywizz_id || '',
+        });
+      }
+    });
+  }
+
+  if (Array.isArray(state.data.sessions)) {
+    state.data.sessions.forEach((s) => {
+      if (s.telegram_chat_id && !userMap.has(String(s.telegram_chat_id))) {
+        userMap.set(String(s.telegram_chat_id), {
+          chatId: String(s.telegram_chat_id),
+          name: s.full_name || '',
+          email: s.company_email || '',
+          applywizzId: s.applywizz_id || '',
+        });
+      }
+    });
+  }
+
+  if (Array.isArray(state.data.audit_logs)) {
+    state.data.audit_logs.forEach((a) => {
+      if (a.telegram_chat_id && !userMap.has(String(a.telegram_chat_id))) {
+        userMap.set(String(a.telegram_chat_id), {
+          chatId: String(a.telegram_chat_id),
+          name: a.full_name || '',
+          email: a.company_email || '',
+          applywizzId: a.applywizz_id || '',
+        });
+      }
+    });
+  }
+
+  const sortedUsers = Array.from(userMap.values()).sort((a, b) => {
+    const nameA = a.name || a.email || a.chatId;
+    const nameB = b.name || b.email || b.chatId;
+    return nameA.localeCompare(nameB);
+  });
+
+  let optionsHtml = '<option value="all">👥 All Users (Combined)</option>';
+  sortedUsers.forEach((u) => {
+    const label = u.name
+      ? `${u.name}${u.applywizzId ? ` (${u.applywizzId})` : ''} — Chat ${u.chatId}`
+      : (u.email ? `${u.email} — Chat ${u.chatId}` : `Chat ${u.chatId}`);
+    const selected = currentVal === u.chatId ? 'selected' : '';
+    optionsHtml += `<option value="${escapeHtml(u.chatId)}" ${selected}>${escapeHtml(label)}</option>`;
+  });
+
+  userFilterEl.innerHTML = optionsHtml;
 }
 
 // Render Top KPIs
@@ -211,6 +302,9 @@ function renderHeaderAndKPIs() {
 function renderStreamLog() {
   const container = streamLogContainer;
   const filtered = state.streamEvents.filter((item) => {
+    if (state.filters.streamUser !== 'all' && String(item.telegram_chat_id) !== String(state.filters.streamUser)) {
+      return false;
+    }
     if (state.filters.streamEvent !== 'all' && item.event !== state.filters.streamEvent) return false;
     if (!state.filters.streamSearch) return true;
 
@@ -337,7 +431,7 @@ function renderMatrixTable() {
   });
 
   if (filtered.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="8" class="text-center text-muted" style="padding:20px;">No candidate sessions found.</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9" class="text-center text-muted" style="padding:20px;">No candidate sessions found.</td></tr>';
     return;
   }
 
@@ -364,6 +458,11 @@ function renderMatrixTable() {
         <td>
           ${s.current_prompt_url ? `<a href="${escapeHtml(s.current_prompt_url)}" target="_blank" rel="noopener" style="color:var(--accent-blue)">Active Prompt ↗</a>` : '<span style="color:var(--text-dim)">None</span>'}
         </td>
+        <td>
+          <button class="dev-btn dev-btn-xs dev-btn-primary" onclick="viewUserLogs('${escapeHtml(String(s.telegram_chat_id))}')">
+            View Logs
+          </button>
+        </td>
       </tr>
     `;
   }).join('');
@@ -382,7 +481,8 @@ function renderErrorsTable() {
     const user = String(j.full_name || j.company_email || j.telegram_chat_id || '').toLowerCase();
     const title = String(j.job_name || '').toLowerCase();
     const status = String(j.status || '').toLowerCase();
-    return user.includes(state.filters.errorsSearch) || title.includes(state.filters.errorsSearch) || status.includes(state.filters.errorsSearch);
+    const reason = String(j.reason || '').toLowerCase();
+    return user.includes(state.filters.errorsSearch) || title.includes(state.filters.errorsSearch) || status.includes(state.filters.errorsSearch) || reason.includes(state.filters.errorsSearch);
   });
 
   if (filtered.length === 0) {
@@ -399,7 +499,10 @@ function renderErrorsTable() {
         <td style="font-family:var(--font-mono); font-size:11px;">${timeStr}</td>
         <td><strong>${escapeHtml(user)}</strong></td>
         <td>${escapeHtml(j.job_name || 'Unnamed job')}</td>
-        <td><span class="badge badge-red">${escapeHtml(j.status)}</span></td>
+        <td>
+          <span class="badge badge-red">${escapeHtml(j.status)}</span>
+          ${j.reason ? `<div style="font-size: 11px; margin-top: 4px; color: var(--text-dim);">${escapeHtml(j.reason)}</div>` : ''}
+        </td>
         <td><a href="${escapeHtml(j.url || '#')}" target="_blank" rel="noopener" style="color:var(--accent-blue)">Inspect Link ↗</a></td>
       </tr>
     `;
@@ -543,3 +646,29 @@ function remaining(deadline) {
 function escapeHtml(val) {
   return String(val ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
+
+window.viewUserLogs = function(chatId) {
+  if (!chatId) return;
+
+  // 1. Switch to Stream tab
+  document.querySelectorAll('.dev-tab').forEach((t) => t.classList.remove('active'));
+  document.querySelectorAll('.dev-view').forEach((v) => v.classList.remove('active'));
+
+  const streamTab = document.querySelector('.dev-tab[data-target="tab-stream"]');
+  const streamView = document.querySelector('#tab-stream');
+  if (streamTab) streamTab.classList.add('active');
+  if (streamView) streamView.classList.add('active');
+  state.activeTab = 'tab-stream';
+
+  // 2. Set user filter dropdown
+  state.filters.streamUser = String(chatId);
+  const userFilterEl = document.querySelector('#stream-user-filter');
+  if (userFilterEl) {
+    userFilterEl.value = String(chatId);
+  }
+
+  // 3. Render immediately and load historical logs for this user
+  renderStreamLog();
+  initEventSource();
+  loadOverview(false, String(chatId));
+};

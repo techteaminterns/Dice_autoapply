@@ -157,3 +157,60 @@ test('searchResumeForAnswer extracts URLs and certifications from resume text', 
   );
   assert.equal(cert, 'Yes');
 });
+
+test('findKnownAnswer and saveKnownAnswer strictly scope answers by client_id', async () => {
+  const { findKnownAnswer, saveKnownAnswer, normalizeQuestionText } = require('../lib/unknown-questions');
+  const mockDb = new Map();
+  const mockPool = {
+    query: async (sql, params) => {
+      if (sql.includes('INSERT INTO')) {
+        const [clientId, qText, norm, type, opts, ans] = params;
+        mockDb.set(`${clientId}::${norm}`, ans);
+        return { rows: [] };
+      }
+      if (sql.includes('SELECT answer')) {
+        const [norm, clientId] = params;
+        const key = clientId ? `${clientId}::${norm}` : norm;
+        const val = mockDb.get(key);
+        return { rows: val ? [{ answer: val }] : [] };
+      }
+      return { rows: [] };
+    },
+  };
+
+  await saveKnownAnswer(mockPool, {
+    clientId: 'client-A',
+    questionText: 'What is your desired base salary?',
+    answer: '140000',
+  });
+
+  const clientAAnswer = await findKnownAnswer(mockPool, {
+    clientId: 'client-A',
+    questionText: 'What is your desired base salary?',
+  });
+  assert.equal(clientAAnswer, '140000', 'Client A should receive their own saved answer');
+
+  const clientBAnswer = await findKnownAnswer(mockPool, {
+    clientId: 'client-B',
+    questionText: 'What is your desired base salary?',
+  });
+  assert.equal(clientBAnswer, null, 'Client B must NOT receive Client A’s personal answer');
+});
+
+test('normalizeQuestionText preserves programming languages (C#, C++, .NET) as distinct terms', () => {
+  const { normalizeQuestionText } = require('../lib/unknown-questions');
+
+  const cSharp = normalizeQuestionText('Experience with C#?');
+  const cPlusPlus = normalizeQuestionText('Experience with C++?');
+  const c = normalizeQuestionText('Experience with C?');
+  const dotNet = normalizeQuestionText('Experience with .NET development?');
+
+  assert.equal(cSharp, 'experience with csharp');
+  assert.equal(cPlusPlus, 'experience with cplusplus');
+  assert.equal(c, 'experience with c');
+  assert.equal(dotNet, 'experience with dotnet development');
+
+  assert.notEqual(cSharp, cPlusPlus);
+  assert.notEqual(cSharp, c);
+  assert.notEqual(cPlusPlus, c);
+});

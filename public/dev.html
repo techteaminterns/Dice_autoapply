@@ -1,21 +1,24 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Developer Observability Portal | Dice Scaling</title>
+  <title>DevLogs Dice</title>
   <link rel="stylesheet" href="/dev.css">
-  <link rel="icon" type="image/png" href="/BotDice.png">
-</head>
+  <link rel="icon" type="image/png" href="/code.png">
+</head>x
+
 <body>
   <div class="dev-app">
     <!-- Top Header -->
     <header class="dev-header">
       <div class="dev-header-left">
         <div class="dev-brand">
+          <img src="/Applywizz logo.jpeg" alt="Applywizz Logo" class="brand-logo-img">
           <div class="dev-brand-badge">DEV</div>
           <div class="dev-brand-info">
-            <h1>Dice Scaling Telemetry</h1>
+            <h1>Dice AutoEasyApply Admin Logs</h1>
             <span>Real-time System Observability & Automation Stream</span>
           </div>
         </div>
@@ -49,7 +52,7 @@
         <div class="kpi-sub">Currently scanning for jobs</div>
       </div>
       <div class="kpi-card accent-purple">
-        <div class="kpi-label">Applications Today</div>
+        <div class="kpi-label">Applications prompted</div>
         <div class="kpi-val" id="kpi-applied-today">—</div>
         <div class="kpi-sub">Submitted to Dice.com</div>
       </div>
@@ -72,10 +75,14 @@
 
     <!-- Navigation Tabs -->
     <nav class="dev-tabs">
-      <button class="dev-tab active" data-target="tab-stream">📡 Live Event Stream <span class="tab-count" id="tab-count-events">0</span></button>
-      <button class="dev-tab" data-target="tab-queue">⚙️ Apply Queue & Workers <span class="tab-count" id="tab-count-queue">0</span></button>
-      <button class="dev-tab" data-target="tab-matrix">👥 Candidate Session Matrix <span class="tab-count" id="tab-count-sessions">0</span></button>
-      <button class="dev-tab" data-target="tab-errors">❌ Error Diagnostics <span class="tab-count" id="tab-count-errors">0</span></button>
+      <button class="dev-tab active" data-target="tab-stream">📡 Live Event Stream <span class="tab-count"
+          id="tab-count-events">0</span></button>
+      <button class="dev-tab" data-target="tab-queue">⚙️ Apply Queue & Workers <span class="tab-count"
+          id="tab-count-queue">0</span></button>
+      <button class="dev-tab" data-target="tab-matrix">👥 Candidate Session Matrix <span class="tab-count"
+          id="tab-count-sessions">0</span></button>
+      <button class="dev-tab" data-target="tab-errors">❌ Error Diagnostics <span class="tab-count"
+          id="tab-count-errors">0</span></button>
       <button class="dev-tab" data-target="tab-system">🏥 System Infrastructure</button>
     </nav>
 
@@ -85,9 +92,13 @@
       <section class="dev-view active" id="tab-stream">
         <div class="view-toolbar">
           <div class="search-wrap">
-            <input type="search" id="stream-search" placeholder="Filter by event (e.g. prompt, yes, error), candidate email, or chat ID..." />
+            <input type="search" id="stream-search"
+              placeholder="Filter by event (e.g. prompt, yes, error), candidate email, or chat ID..." />
           </div>
           <div class="filter-group">
+            <select id="stream-user-filter" title="Filter logs by specific candidate">
+              <option value="all">👥 All Users (Combined)</option>
+            </select>
             <select id="stream-event-filter">
               <option value="all">All Event Types</option>
               <option value="job_prompt_sent">Job Prompt Sent</option>
@@ -146,7 +157,9 @@
                   </tr>
                 </thead>
                 <tbody id="queue-table-body">
-                  <tr><td colspan="7" class="text-center text-muted">No items in queue.</td></tr>
+                  <tr>
+                    <td colspan="7" class="text-center text-muted">No items in queue.</td>
+                  </tr>
                 </tbody>
               </table>
             </div>
@@ -175,6 +188,7 @@
                 <th>Next Scan Schedule</th>
                 <th>Last Decision</th>
                 <th>Current Prompt</th>
+                <th>Actions</th>
               </tr>
             </thead>
             <tbody id="sessions-table-body">
@@ -217,20 +231,44 @@
           <div class="system-card">
             <h3>Runtime Environment</h3>
             <table class="keyval-table">
-              <tr><td>Node Version</td><td id="sys-node-ver">—</td></tr>
-              <tr><td>Platform / OS</td><td id="sys-platform">—</td></tr>
-              <tr><td>Process Uptime</td><td id="sys-uptime-long">—</td></tr>
-              <tr><td>Browser Engine</td><td id="sys-browser-mode">—</td></tr>
-              <tr><td>Max Concurrency</td><td id="sys-max-concurrency">—</td></tr>
+              <tr>
+                <td>Node Version</td>
+                <td id="sys-node-ver">—</td>
+              </tr>
+              <tr>
+                <td>Platform / OS</td>
+                <td id="sys-platform">—</td>
+              </tr>
+              <tr>
+                <td>Process Uptime</td>
+                <td id="sys-uptime-long">—</td>
+              </tr>
+              <tr>
+                <td>Browser Engine</td>
+                <td id="sys-browser-mode">—</td>
+              </tr>
+              <tr>
+                <td>Max Concurrency</td>
+                <td id="sys-max-concurrency">—</td>
+              </tr>
             </table>
           </div>
 
           <div class="system-card">
             <h3>Process Memory Usage</h3>
             <table class="keyval-table">
-              <tr><td>RSS Memory</td><td id="sys-mem-rss">—</td></tr>
-              <tr><td>Heap Used</td><td id="sys-mem-heap-used">—</td></tr>
-              <tr><td>Heap Total</td><td id="sys-mem-heap-total">—</td></tr>
+              <tr>
+                <td>RSS Memory</td>
+                <td id="sys-mem-rss">—</td>
+              </tr>
+              <tr>
+                <td>Heap Used</td>
+                <td id="sys-mem-heap-used">—</td>
+              </tr>
+              <tr>
+                <td>Heap Total</td>
+                <td id="sys-mem-heap-total">—</td>
+              </tr>
             </table>
           </div>
 
@@ -273,4 +311,5 @@
 
   <script src="/dev.js"></script>
 </body>
+
 </html>

@@ -4,7 +4,8 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>APPLYWIZZ Auto Apply V2</title>
+  <title>Applywizz DiceEasyApply</title>
+  <link rel="icon" type="image/jpeg" href="/Applywizz logo.jpeg">
   <link rel="stylesheet" href="/dashboard.css">
 </head>
 
@@ -14,10 +15,9 @@
     <header class="master-header">
       <div class="header-left">
         <div class="brand">
-          <span class="brand-logo">AW</span>
+          <img src="/Applywizz logo.jpeg" alt="Applywizz Logo" class="brand-logo-img">
           <div class="brand-title">
-            <strong>APPLYWIZZ</strong>
-            <small>Dice AutoEasyApply</small>
+            <strong>DICE AutoEasyApply</strong>
           </div>
         </div>
         <nav class="master-nav">
@@ -95,7 +95,7 @@
           <span class="count-badge" id="directory-count-badge">0 / 0</span>
         </div>
         <div class="search-box">
-          <input type="search" id="candidate-search" placeholder="🔍 Search name or AWL-ID...">
+          <input type="search" id="candidate-search" placeholder="🔍 Search name, AWL-ID, or CA...">
         </div>
         <div class="candidate-list" id="candidate-list"></div>
       </aside>
@@ -175,9 +175,7 @@
 
     <!-- View Container: Stats Tab (Master Combined Metrics & Global Jobs Table) -->
     <div id="stats-view-container" class="stats-workspace" hidden>
-      <h2>Application Pipeline Stats</h2>
-      <p class="muted">Real-time throughput metrics, resolution tier breakdowns, and submission telemetry across all
-        candidates.</p>
+      <h2>Applications Status</h2>
 
       <div class="stats-cards-grid master">
         <div class="metric-card yellow">
@@ -205,6 +203,10 @@
           <strong id="stats-prompts-skipped">0</strong>
           <small>Timed out</small>
         </div>
+      </div>
+
+      <div id="ca-stats-container" style="margin-top: 20px;">
+        <!-- Filled by JS: CA Job Directory / Stats -->
       </div>
 
       <section class="panel-card margin-top">
@@ -241,7 +243,7 @@
         <button class="modal-close-btn" id="close-qr-modal-btn" type="button">Close ✖</button>
       </div>
       <div class="modal-body">
-        <img src="BotDice.png" alt="Telegram Bot QR Code" class="qr-modal-img">
+        <img src="/BotDice.png" alt="Telegram Bot QR Code" class="qr-modal-img">
         <p class="muted margin-top" style="text-align: center; margin-bottom: 0;">Scan code to open Telegram Bot chat
         </p>
       </div>

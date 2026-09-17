@@ -61,7 +61,7 @@ dateInput.value = [today.getFullYear(), String(today.getMonth() + 1).padStart(2,
 // Event Listeners
 dateInput.addEventListener('change', loadDashboard);
 timezoneInput.addEventListener('change', loadDashboard);
-refreshBtn.addEventListener('click', loadDashboard);
+refreshBtn.addEventListener('click', () => window.location.reload());
 
 const copyLinkBtn = document.querySelector('#copy-link-btn');
 const showQrBtn = document.querySelector('#show-qr-btn');
@@ -159,13 +159,27 @@ if (syncMappingsBtn) {
         body: JSON.stringify({}),
       });
       const data = await res.json();
+
+      if (res.status === 429) {
+        syncMappingsBtn.textContent = '⏳ Cooldown Active';
+        syncMappingsBtn.style.background = '#fef3c7';
+        statusText.textContent = data.error || 'Cooldown active. Please wait before syncing again.';
+        setTimeout(() => {
+          syncMappingsBtn.textContent = originalText;
+          syncMappingsBtn.style.background = '';
+          syncMappingsBtn.disabled = false;
+        }, 3500);
+        return;
+      }
+
       if (!res.ok || !data.ok) {
         throw new Error(data.error || 'Sync failed');
       }
 
       syncMappingsBtn.textContent = '✓ Synced!';
       syncMappingsBtn.style.background = '#d1fae5';
-      statusText.textContent = `Synced ${data.total_mappings || 0} mappings (${data.clients_updated || 0} updated)`;
+      const scopeLabel = data.scoped ? ` (scoped to ${data.ca_email || 'your account'})` : '';
+      statusText.textContent = `Synced ${data.total_mappings || 0} mappings (${data.clients_updated || 0} updated)${scopeLabel}`;
       await loadDashboard();
 
       setTimeout(() => {
@@ -319,6 +333,7 @@ function render() {
   renderCandidateDirectory();
   renderCandidateWorkspace();
   renderGlobalStats();
+  renderCaStats();
 }
 
 function updateMasterTabUI() {
@@ -333,6 +348,7 @@ function updateMasterTabUI() {
     dashboardViewContainer.hidden = true;
     statsViewContainer.hidden = false;
     renderGlobalStats();
+    renderCaStats();
   }
 }
 
@@ -351,6 +367,7 @@ function updateCandidateSubTabUI() {
   }
 }
 
+
 function renderCandidateDirectory() {
   if (!state.data || !state.data.users) return;
   const users = state.data.users;
@@ -362,7 +379,8 @@ function renderCandidateDirectory() {
     const awl = String(u.applywizz_id || '').toLowerCase();
     const chat = String(u.telegram_chat_id || '').toLowerCase();
     const cid = String(u.client_id || '').toLowerCase();
-    return name.includes(state.searchQuery) || email.includes(state.searchQuery) || awl.includes(state.searchQuery) || chat.includes(state.searchQuery) || cid.includes(state.searchQuery);
+    const ca = String(u.ca_name || u.career_associate_id || '').toLowerCase();
+    return name.includes(state.searchQuery) || email.includes(state.searchQuery) || awl.includes(state.searchQuery) || chat.includes(state.searchQuery) || cid.includes(state.searchQuery) || ca.includes(state.searchQuery);
   });
 
   directoryCountBadge.textContent = `${filtered.length} / ${users.length}`;
@@ -372,22 +390,39 @@ function renderCandidateDirectory() {
     return;
   }
 
-  candidateList.innerHTML = filtered.map((user) => {
-    const id = String(user.client_id || user.telegram_chat_id || user.id);
-    const isSelected = String(state.activeCandidateId) === id;
-    const name = user.full_name || user.company_email || (user.telegram_chat_id ? `User ${user.telegram_chat_id}` : `Candidate ${id.slice(0, 8)}`);
-    const initials = getInitials(name);
-    const awlId = formatAwlId(user.applywizz_id, user.client_id || user.telegram_chat_id || id);
-    const jobsCount = user.applications ? user.applications.length : 0;
-    const isLinked = Boolean(user.telegram_chat_id);
-    const isLive = isLinked && Boolean(
-      user.has_activity ||
-      (user.session?.session_deadline && new Date(user.session.session_deadline).getTime() > Date.now())
-    );
-    const statusClass = !isLinked ? 'pending' : (isLive ? 'active' : 'idle');
-    const statusText = !isLinked ? 'Not Linked' : (isLive ? (user.has_activity ? `${user.audit_logs.length + user.applications.length} events` : 'Active') : 'Idle');
+  // Group filtered users by CA
+  const groups = {};
+  for (const user of filtered) {
+    const caName = user.ca_name || user.career_associate_id || 'Unassigned';
+    if (!groups[caName]) groups[caName] = [];
+    groups[caName].push(user);
+  }
 
-    return `
+  // Sort CA names alphabetically
+  const sortedCaNames = Object.keys(groups).sort((a, b) => a.localeCompare(b));
+
+  let html = '';
+  for (const caName of sortedCaNames) {
+    if (state.data.operator && state.data.operator.role === 'admin') {
+      html += `<div class="ca-sidebar-header">${escapeHtml(caName)}</div>`;
+    }
+    
+    html += groups[caName].map((user) => {
+      const id = String(user.client_id || user.telegram_chat_id || user.id);
+      const isSelected = String(state.activeCandidateId) === id;
+      const name = user.full_name || user.company_email || (user.telegram_chat_id ? `User ${user.telegram_chat_id}` : `Candidate ${id.slice(0, 8)}`);
+      const initials = getInitials(name);
+      const awlId = formatAwlId(user.applywizz_id, user.client_id || user.telegram_chat_id || id);
+      const jobsCount = user.applications ? user.applications.length : 0;
+      const isLinked = Boolean(user.telegram_chat_id);
+      const isLive = isLinked && Boolean(
+        user.has_activity ||
+        (user.session?.session_deadline && new Date(user.session.session_deadline).getTime() > Date.now())
+      );
+      const statusClass = !isLinked ? 'pending' : (isLive ? 'active' : 'idle');
+      const statusText = !isLinked ? 'Not Linked' : (isLive ? 'Linked' : 'Idle');
+
+      return `
       <div class="candidate-card ${isSelected ? 'active' : ''}" onclick="selectCandidate('${escapeHtml(id)}')">
         <div class="card-top">
           <div class="avatar-awl">
@@ -402,8 +437,11 @@ function renderCandidateDirectory() {
           <span class="jobs-count-pill">${jobsCount} ${jobsCount === 1 ? 'Job' : 'Jobs'}</span>
         </div>
       </div>
-    `;
-  }).join('');
+      `;
+    }).join('');
+  }
+
+  candidateList.innerHTML = html;
 }
 
 window.selectCandidate = function (candidateId) {
@@ -484,7 +522,7 @@ function renderCandidateWorkspace() {
     sessionMetricsGrid.innerHTML = `
       <div class="metric-box">
         <strong>${formatTime(session.session_started_at, state.data.timezone_name)}</strong>
-        <span>1-hr / Window Start</span>
+        <span>9-hr Window start</span>
       </div>
       <div class="metric-box">
         <strong>${formatTime(session.session_deadline, state.data.timezone_name)}</strong>
@@ -662,3 +700,57 @@ function escapeHtml(value) {
 }
 
 loadDashboard();
+
+function renderCaStats() {
+  const container = document.querySelector('#ca-stats-container');
+  if (!container) return;
+  
+  if (!state.data || !state.data.operator || state.data.operator.role !== 'admin' || !state.data.ca_stats) {
+    container.innerHTML = '';
+    return;
+  }
+  
+  const stats = state.data.ca_stats;
+  if (!stats.length) {
+    container.innerHTML = '<p class="muted">No CA stats available.</p>';
+    return;
+  }
+  
+  let html = `
+    <section class="panel-card margin-top">
+      <div class="card-header-bar">
+        <h3>Career Associate Directory</h3>
+      </div>
+      <div class="table-responsive">
+        <table class="data-table">
+          <thead>
+            <tr>
+              <th>CA Name</th>
+              <th>Total Clients</th>
+              <th>Active Sessions</th>
+              <th>Applications Prompted</th>
+            </tr>
+          </thead>
+          <tbody>
+  `;
+  
+  for (const ca of stats) {
+    html += `
+      <tr>
+        <td><strong>${escapeHtml(ca.ca_name || 'Unassigned')}</strong></td>
+        <td>${ca.total_clients || 0}</td>
+        <td>${ca.active_sessions || 0}</td>
+        <td><span class="badge-pill blue">${ca.applied_today || 0}</span></td>
+      </tr>
+    `;
+  }
+  
+  html += `
+          </tbody>
+        </table>
+      </div>
+    </section>
+  `;
+  
+  container.innerHTML = html;
+}

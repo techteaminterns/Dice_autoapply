@@ -166,13 +166,16 @@ async function syncMappings(db, azure, targetDate, cas) {
 
       try {
         const clientId = record.client_id || record.id || null;
+        const clientEmail = String(record.client_email || record.company_email || '').trim().toLowerCase();
         const updateRes = await db.query(
           `update clients_additional_info
-              set career_associate_id = $1
+              set career_associate_id = $1,
+                  applywizz_id = coalesce(applywizz_id, $2)
             where applywizz_id = $2
-               or ($3::uuid is not null and id = $3::uuid)
+               or ($3 <> '' and lower(company_email) = $3)
+               or ($4::uuid is not null and id = $4::uuid)
             returning id`,
-          [caId, applywizzId, clientId]
+          [caId, applywizzId, clientEmail, clientId]
         );
 
         if (updateRes.rowCount > 0) {
@@ -189,6 +192,23 @@ async function syncMappings(db, azure, targetDate, cas) {
             const clientPayload = await fetchJson(clientFetchUrl);
             const { clientRow, profileRow } = mapImportItem(clientPayload);
             clientRow.career_associate_id = caId;
+
+            // Align ID with any existing record sharing company_email or applywizz_id
+            const existingRes = await db.query(
+              `select id from clients_additional_info
+                where (company_email is not null and lower(company_email) = lower($1))
+                   or (applywizz_id is not null and applywizz_id = $2)
+                limit 1`,
+              [clientRow.company_email, clientRow.applywizz_id]
+            ).catch(() => ({ rows: [] }));
+
+            if (existingRes.rows && existingRes.rows.length > 0) {
+              const existingId = existingRes.rows[0].id;
+              clientRow.id = existingId;
+              if (profileRow) {
+                profileRow.id = existingId;
+              }
+            }
 
             const { error: clientError } = await azure
               .from('clients_additional_info')
@@ -215,13 +235,22 @@ async function syncMappings(db, azure, targetDate, cas) {
           const clientName = String(record.client_name || '').trim();
 
           if (clientEmail) {
+            const existingRes = await db.query(
+              `select id from clients_additional_info 
+                where lower(company_email) = $1 or applywizz_id = $2
+                limit 1`,
+              [clientEmail, applywizzId]
+            ).catch(() => ({ rows: [] }));
+            const targetId = existingRes.rows[0]?.id || clientId;
+
             await db.query(
               `insert into clients_additional_info (id, applywizz_id, full_name, company_email, career_associate_id, raw_payload)
                values ($1, $2, $3, $4, $5, $6)
                on conflict (id) do update set
                  career_associate_id = excluded.career_associate_id,
+                 applywizz_id = coalesce(clients_additional_info.applywizz_id, excluded.applywizz_id),
                  full_name = coalesce(clients_additional_info.full_name, excluded.full_name)`,
-              [clientId, applywizzId, clientName || null, clientEmail, caId, JSON.stringify(record)]
+              [targetId, applywizzId, clientName || null, clientEmail, caId, JSON.stringify(record)]
             );
             clientsUpdated += 1;
           }
@@ -247,12 +276,14 @@ async function runSyncDaily(options = {}) {
   const db = options.db || createPool();
   const azure = options.azure || createServiceClient();
   const targetDate = options.date || getYesterdayDate();
+  const targetCA = options.targetCA || null;
 
-  console.log(`=== Starting Daily Sync Pipeline for date: ${targetDate} ===`);
+  const modeStr = targetCA ? `Scoped to CA: ${targetCA.email}` : 'Global (All CAs)';
+  console.log(`=== Starting Daily Sync Pipeline [${modeStr}] for date: ${targetDate} ===`);
   const startTime = Date.now();
 
   try {
-    const cas = await syncCAs(db);
+    const cas = targetCA ? [targetCA] : await syncCAs(db);
     const mappingStats = await syncMappings(db, azure, targetDate, cas);
 
     const durationSeconds = ((Date.now() - startTime) / 1000).toFixed(2);
@@ -260,6 +291,8 @@ async function runSyncDaily(options = {}) {
 
     return {
       ok: true,
+      scoped: Boolean(targetCA),
+      ca_email: targetCA?.email || null,
       duration_seconds: durationSeconds,
       date: targetDate,
       cas_synced: cas.length,

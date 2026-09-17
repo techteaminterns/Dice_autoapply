@@ -70,3 +70,36 @@ Jan 2020 - Dec 2021
   const unknownSkill = getExperienceForSkill(parsed, 'Fortran');
   assert.equal(unknownSkill, 0, 'Completely unmentioned skill should return 0');
 });
+
+test('parseResumeText isolates professional experience and excludes education dates from work blocks', () => {
+  const resumeWithEduDates = `
+Jane Smith
+Full Stack Developer
+
+Professional Experience:
+Senior Developer at Gamma Tech
+Jan 2022 - Jan 2024
+- Led frontend architecture with TypeScript and React.js.
+
+Developer at Delta LLC
+Jan 2020 - Jan 2022
+- Backend services using Go and PostgreSQL.
+
+Education:
+State University of Technology
+Sep 2014 - Jun 2018
+- Bachelor of Science in Computer Science.
+- Coursework: Algorithms, Operating Systems, C++.
+  `;
+
+  const parsed = parseResumeText(resumeWithEduDates);
+
+  // Exactly 2 work blocks from Gamma Tech and Delta LLC (total 4 years)
+  assert.equal(parsed.workBlocks.length, 2, 'Should only extract work blocks from experience section');
+  assert.equal(parsed.highestEducation, "Bachelor's Degree");
+  assert.equal(parsed.totalExperienceYears, 4, 'Total experience should be 4 years, NOT 8 years (education excluded)');
+
+  // Ensure no work block contains the education date range
+  const hasEduBlock = parsed.workBlocks.some((b) => b.text.includes('State University') || b.dateRange.includes('2014'));
+  assert.equal(hasEduBlock, false, 'Education must not be parsed as a work block');
+});
