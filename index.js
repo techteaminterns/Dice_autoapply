@@ -590,64 +590,92 @@ async function getJobName(page) {
   return company ? `${jobTitle} (${company})` : jobTitle;
 }
 
-async function prevalidateJob(chatId, job) {
-  const activeSession = await readActiveSession(chatId);
-  const storageState = activeSession?.storageState || null;
-  if (!storageState) {
-    console.warn(`[User ${chatId}] No Dice storageState found for pre-flight check.`);
-    return { ok: true, jobName: job.title || 'Unknown Job' };
+const PREFLIGHT_CONCURRENCY = Math.max(1, Number(process.env.PREFLIGHT_MAX_CONCURRENT || 2));
+let activePreflights = 0;
+const preflightQueue = [];
+
+function acquirePreflight() {
+  if (activePreflights < PREFLIGHT_CONCURRENCY) {
+    activePreflights += 1;
+    return Promise.resolve();
   }
+  return new Promise((resolve) => {
+    preflightQueue.push(resolve);
+  });
+}
 
-  let handle = null;
+function releasePreflight() {
+  activePreflights = Math.max(0, activePreflights - 1);
+  const next = preflightQueue.shift();
+  if (next) {
+    activePreflights += 1;
+    next();
+  }
+}
+
+async function prevalidateJob(chatId, job) {
+  await acquirePreflight();
   try {
-    handle = await openBrowser({ storageState });
-    const { page } = handle;
-    await page.goto(job.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
-    await page.waitForLoadState('networkidle').catch(() => {});
-
-    const jobName = await getJobName(page).catch(() => job.title || 'Unknown Job');
-
-    if (page.url().includes('/login')) {
-      console.warn(`[User ${chatId}] Session expired during pre-flight check for ${job.url}`);
-      return { ok: false, reason: 'session_expired', jobName };
+    const activeSession = await readActiveSession(chatId);
+    const storageState = activeSession?.storageState || null;
+    if (!storageState) {
+      console.warn(`[User ${chatId}] No Dice storageState found for pre-flight check.`);
+      return { ok: true, jobName: job.title || 'Unknown Job' };
     }
 
-    const applyButton = page.getByTestId('apply-button');
-    const applyCount = await applyButton.count().catch(() => 0);
-    if (applyCount === 0) {
-      return { ok: false, reason: 'no_apply_button', jobName };
+    let handle = null;
+    try {
+      handle = await openBrowser({ storageState });
+      const { page } = handle;
+      await page.goto(job.url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      await page.waitForLoadState('networkidle').catch(() => {});
+
+      const jobName = await getJobName(page).catch(() => job.title || 'Unknown Job');
+
+      if (page.url().includes('/login')) {
+        console.warn(`[User ${chatId}] Session expired during pre-flight check for ${job.url}`);
+        return { ok: false, reason: 'session_expired', jobName };
+      }
+
+      const applyButton = page.getByTestId('apply-button');
+      const applyCount = await applyButton.count().catch(() => 0);
+      if (applyCount === 0) {
+        return { ok: false, reason: 'no_apply_button', jobName };
+      }
+
+      const isVisible = await applyButton.first().isVisible().catch(() => false);
+      if (!isVisible) {
+        return { ok: false, reason: 'no_apply_button', jobName };
+      }
+
+      const popupPromise = page.context()
+        .waitForEvent('page', { timeout: 4000 })
+        .catch(() => null);
+
+      await applyButton.first().click().catch(() => {});
+
+      const applicationPage = await Promise.race([
+        popupPromise,
+        new Promise((resolve) => setTimeout(() => resolve(null), 4000)),
+      ]) || page;
+
+      await applicationPage.waitForLoadState('domcontentloaded').catch(() => {});
+
+      if (!applicationPage.url().includes('dice.com')) {
+        return { ok: false, reason: 'external', jobName };
+      }
+
+      return { ok: true, jobName };
+    } catch (error) {
+      console.warn(`[User ${chatId}] Pre-flight validation error for ${job.url}:`, error.message);
+      return { ok: true, jobName: job.title || 'Unknown Job' };
+    } finally {
+      if (handle) {
+        await closeBrowser(handle).catch(() => {});
+      }
     }
-
-    const isVisible = await applyButton.first().isVisible().catch(() => false);
-    if (!isVisible) {
-      return { ok: false, reason: 'no_apply_button', jobName };
-    }
-
-    const popupPromise = page.context()
-      .waitForEvent('page', { timeout: 4000 })
-      .catch(() => null);
-
-    await applyButton.first().click().catch(() => {});
-
-    const applicationPage = await Promise.race([
-      popupPromise,
-      new Promise((resolve) => setTimeout(() => resolve(null), 4000)),
-    ]) || page;
-
-    await applicationPage.waitForLoadState('domcontentloaded').catch(() => {});
-
-    if (!applicationPage.url().includes('dice.com')) {
-      return { ok: false, reason: 'external', jobName };
-    }
-
-    return { ok: true, jobName };
-  } catch (error) {
-    console.warn(`[User ${chatId}] Pre-flight validation error for ${job.url}:`, error.message);
-    return { ok: true, jobName: job.title || 'Unknown Job' };
   } finally {
-    if (handle) {
-      await closeBrowser(handle).catch(() => {});
-    }
+    releasePreflight();
   }
 }
 

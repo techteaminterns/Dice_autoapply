@@ -313,9 +313,12 @@ function render() {
   }
   const opTag = document.querySelector('.op-tag');
   if (opTag) {
-    opTag.textContent = state.operatorRole === 'admin' ? 'ADMIN' : 'CA';
+    opTag.textContent = state.operatorRole === 'admin' ? 'ADMIN' : (state.operatorRole === 'manager' ? 'MANAGER' : 'CA');
     if (state.operatorRole === 'admin') {
       opTag.style.background = '#1d4ed8';
+      opTag.style.color = '#ffffff';
+    } else if (state.operatorRole === 'manager') {
+      opTag.style.background = '#0d9488';
       opTag.style.color = '#ffffff';
     } else {
       opTag.style.background = '';
@@ -326,7 +329,7 @@ function render() {
 
   const devLink = document.querySelector('#dev-portal-link');
   if (devLink) {
-    devLink.style.display = state.operatorRole === 'admin' ? 'inline-flex' : 'none';
+    devLink.style.display = (state.operatorRole === 'admin' || state.operatorRole === 'manager') ? 'inline-flex' : 'none';
   }
 
   updateMasterTabUI();
@@ -403,7 +406,7 @@ function renderCandidateDirectory() {
 
   let html = '';
   for (const caName of sortedCaNames) {
-    if (state.data.operator && state.data.operator.role === 'admin') {
+    if (state.data.operator && (state.data.operator.role === 'admin' || state.data.operator.role === 'manager')) {
       html += `<div class="ca-sidebar-header">${escapeHtml(caName)}</div>`;
     }
     
@@ -705,7 +708,7 @@ function renderCaStats() {
   const container = document.querySelector('#ca-stats-container');
   if (!container) return;
   
-  if (!state.data || !state.data.operator || state.data.operator.role !== 'admin' || !state.data.ca_stats) {
+  if (!state.data || !state.data.operator || (state.data.operator.role !== 'admin' && state.data.operator.role !== 'manager') || !state.data.ca_stats) {
     container.innerHTML = '';
     return;
   }

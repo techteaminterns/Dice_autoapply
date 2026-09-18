@@ -274,6 +274,10 @@ function renderHeaderAndKPIs() {
   const { stats, system, operator } = state.data;
 
   document.querySelector('#dev-operator-name').textContent = operator?.name || operator?.email || 'Admin';
+  const roleBadge = document.querySelector('.role-badge');
+  if (roleBadge && operator?.role) {
+    roleBadge.textContent = String(operator.role).toUpperCase();
+  }
 
   document.querySelector('#kpi-total-candidates').textContent = stats.total_candidates ?? 0;
   document.querySelector('#kpi-linked-candidates').textContent = `${stats.linked_candidates ?? 0} linked to Telegram`;
@@ -530,7 +534,7 @@ function renderSystemTab() {
       <tr>
         <td><strong>${escapeHtml(ca.name || 'Unnamed')}</strong></td>
         <td>${escapeHtml(ca.email || '—')}</td>
-        <td><span class="badge ${ca.role === 'admin' ? 'badge-purple' : 'badge-blue'}">${escapeHtml(ca.role)}</span></td>
+        <td><span class="badge ${ca.role === 'admin' ? 'badge-purple' : (ca.role === 'manager' ? 'badge-green' : 'badge-blue')}">${escapeHtml(ca.role)}</span></td>
         <td><span class="badge ${ca.disabled ? 'badge-red' : 'badge-green'}">${ca.disabled ? 'Disabled' : 'Active'}</span></td>
       </tr>
     `).join('');

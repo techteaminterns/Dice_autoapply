@@ -272,30 +272,67 @@ async function syncMappings(db, azure, targetDate, cas) {
   };
 }
 
+async function deriveManagerLinks(db, cas) {
+  if (!cas || cas.length === 0) return 0;
+  let derivedCount = 0;
+  for (const ca of cas) {
+    if (!ca || !ca.id) continue;
+    try {
+      const res = await db.query(
+        `select career_associate_manager_id
+           from clients_additional_info
+          where (career_associate_id::text = $1 or lower(career_associate_id::text) = lower($2))
+            and career_associate_manager_id is not null
+          limit 1`,
+        [String(ca.id), String(ca.email || '')]
+      );
+      if (res.rows && res.rows.length > 0 && res.rows[0].career_associate_manager_id) {
+        const managerId = res.rows[0].career_associate_manager_id;
+        await db.query(
+          `update dice_ca_accounts
+              set manager_id = $1
+            where id = $2`,
+          [managerId, ca.id]
+        );
+        derivedCount += 1;
+      }
+    } catch (err) {
+      console.warn(`[sync] Could not derive manager for CA ${ca.email || ca.id}:`, err.message);
+    }
+  }
+  console.log(`[sync] Step 3 Complete: Derived manager links for ${derivedCount}/${cas.length} CAs.`);
+  return derivedCount;
+}
+
 async function runSyncDaily(options = {}) {
   const db = options.db || createPool();
   const azure = options.azure || createServiceClient();
   const targetDate = options.date || getYesterdayDate();
   const targetCA = options.targetCA || null;
+  const targetCAs = options.targetCAs || (targetCA ? [targetCA] : null);
 
-  const modeStr = targetCA ? `Scoped to CA: ${targetCA.email}` : 'Global (All CAs)';
+  const modeStr = targetCAs
+    ? `Scoped to ${targetCAs.length} CA(s): ${targetCAs.map((c) => c.email).join(', ')}`
+    : 'Global (All CAs)';
   console.log(`=== Starting Daily Sync Pipeline [${modeStr}] for date: ${targetDate} ===`);
   const startTime = Date.now();
 
   try {
-    const cas = targetCA ? [targetCA] : await syncCAs(db);
+    const cas = targetCAs || await syncCAs(db);
     const mappingStats = await syncMappings(db, azure, targetDate, cas);
+    const managersDerived = await deriveManagerLinks(db, cas);
 
     const durationSeconds = ((Date.now() - startTime) / 1000).toFixed(2);
     console.log(`=== Daily Sync Finished successfully in ${durationSeconds}s ===`);
 
     return {
       ok: true,
-      scoped: Boolean(targetCA),
+      scoped: Boolean(targetCAs),
       ca_email: targetCA?.email || null,
       duration_seconds: durationSeconds,
       date: targetDate,
       cas_synced: cas.length,
+      managers_derived: managersDerived,
       ...mappingStats,
     };
   } catch (error) {
@@ -325,4 +362,5 @@ if (require.main === module) {
 module.exports = {
   runSyncDaily,
   getYesterdayDate,
+  deriveManagerLinks,
 };

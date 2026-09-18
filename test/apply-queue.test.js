@@ -110,3 +110,45 @@ test('hasActiveClientJob returns false when no active jobs exist', async () => {
   const active = await queue.hasActiveClientJob(999);
   assert.equal(active, false, 'Should return false when queue has 0 active jobs');
 });
+
+test('concurrency limiter restricts simultaneous executions to configured limit', async () => {
+  const limit = 2;
+  let active = 0;
+  let maxObserved = 0;
+  const waitQueue = [];
+
+  function acquire() {
+    if (active < limit) {
+      active += 1;
+      maxObserved = Math.max(maxObserved, active);
+      return Promise.resolve();
+    }
+    return new Promise((resolve) => waitQueue.push(resolve));
+  }
+
+  function release() {
+    active = Math.max(0, active - 1);
+    const next = waitQueue.shift();
+    if (next) {
+      active += 1;
+      maxObserved = Math.max(maxObserved, active);
+      next();
+    }
+  }
+
+  async function mockTask() {
+    await acquire();
+    try {
+      assert.ok(active <= limit, `Active count ${active} exceeded limit ${limit}`);
+      await new Promise((r) => setImmediate(r));
+    } finally {
+      release();
+    }
+  }
+
+  await Promise.all([mockTask(), mockTask(), mockTask(), mockTask(), mockTask()]);
+  assert.equal(maxObserved, limit);
+  assert.equal(active, 0);
+  assert.equal(waitQueue.length, 0);
+});
+
