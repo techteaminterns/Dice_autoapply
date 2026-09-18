@@ -34,6 +34,8 @@ const LINK_CUTOFF_MS = (8 * 60 + 32) * 60 * 1000;
 const DECISION_TIMEOUT_MS = 15 * 60 * 1000;
 const NEXT_LINK_DELAY_MS = 28 * 60 * 1000;
 const NEWDAY_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+const APPLY_TIMEOUT_MINUTES = Number(process.env.APPLY_TIMEOUT_MINUTES || 5);
+const APPLY_TIMEOUT_MS = (Number.isFinite(APPLY_TIMEOUT_MINUTES) && APPLY_TIMEOUT_MINUTES > 0 ? APPLY_TIMEOUT_MINUTES : 5) * 60 * 1000;
 const bot = new Bot(botToken);
 const userStates = new Map();
 
@@ -837,9 +839,13 @@ async function applyToJobOnPage(page, jobName, url, chatId) {
 }
 
 // Runs one queued apply on Browserbase/local. Throws on hard failure.
-async function executeQueuedApply(job) {
+async function executeQueuedApply(job, { signal } = {}) {
   const chatId = Number(job.telegram_chat_id);
   const url = job.url;
+
+  if (signal?.aborted) {
+    throw new Error('Apply aborted before start');
+  }
 
   await sendMessage(chatId, 'applying to the job');
 
@@ -856,9 +862,19 @@ async function executeQueuedApply(job) {
     console.log(`[User ${chatId}] Apply browser session: ${handle.sessionId}`);
   }
 
+  const onAbort = () => {
+    console.warn(`[User ${chatId}] Apply timeout reached: closing browser.`);
+    closeBrowser(handle).catch(() => {});
+  };
+
+  if (signal) {
+    signal.addEventListener('abort', onAbort, { once: true });
+  }
+
   try {
     let retryAfterLogin = true;
     while (retryAfterLogin) {
+      if (signal?.aborted) break;
       retryAfterLogin = false;
       const page = await handle.context.newPage();
       try {
@@ -879,6 +895,11 @@ async function executeQueuedApply(job) {
         const jobName = await getJobName(page);
         await applyToJobOnPage(page, jobName, url, chatId);
       } catch (error) {
+        if (signal?.aborted) {
+          console.warn(`[User ${chatId}] Application to ${url} aborted due to timeout.`);
+          await saveAppliedJob(chatId, url, 'Failed', 'failed', 'application_timeout').catch(() => {});
+          throw error;
+        }
         if (error.code === 'SESSION_EXPIRED') {
           activeSession = await refreshLogin(chatId);
           await closeBrowser(handle);
@@ -898,6 +919,9 @@ async function executeQueuedApply(job) {
       }
     }
   } finally {
+    if (signal) {
+      signal.removeEventListener('abort', onAbort);
+    }
     await closeBrowser(handle);
   }
 }
@@ -1561,6 +1585,12 @@ bot.on('callback_query', async (ctx) => {
     audit,
     concurrency: maxConcurrent,
     pollMs: 2000,
+    applyTimeoutMs: APPLY_TIMEOUT_MS,
+    sendTimeoutMessage: (chatId, company) =>
+      sendMessage(
+        chatId,
+        `❌ We were unable to complete your application to ${company} within the expected time. We'll look into it and get back to you.`
+      ),
   });
   console.log(`[Init] Apply queue workers: ${maxConcurrent}`);
 
